@@ -1,0 +1,18 @@
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs
+@@ -70,7 +70,14 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+             // specify a format, we can just declare it without a format and the GPU will handle it.
+             if (gpuAccessor.QueryHostSupportsImageLoadFormatted())
+             {
+-                return TextureFormat.Unknown;
++                // XC2 (2026-11-02): an image without a format is declared with a float sampled type, and Vulkan wants
++                // the sampled type to match the view's numeric format. The light-probe list fragment shaders keep a
++                // per-pixel probe mask in an R32UI image they load and store with SUST.P; a float declaration over the
++                // integer view is invalid and leaves those loads and stores undefined. Integer formats are declared;
++                // float ones keep the format-less declaration.
++                TextureFormat queried = gpuAccessor.QueryTextureFormat(handle, cbufSlot);
++
++                return queried.GetComponentType() == Translation.AggregateType.FP32 ? TextureFormat.Unknown : queried;
+             }
+ 
+             TextureFormat format = gpuAccessor.QueryTextureFormat(handle, cbufSlot);

@@ -1,0 +1,139 @@
+# Builds the release packages with no game files and checks them on a second runner; a version tag also makes a draft
+# release, which a person publishes after the local steps in docs/installer.md ("Making a release"). Never run
+# make_release.py --prove here: it reads generated/upd and build/extracted/upd, which are game-derived and stay local.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        run: |
+          version=$(cat VERSION)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      PACKAGE: XC2-Setup-${{ needs.version.outputs.version }}-windows.zip
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - run: python -m pip install uv==0.12.5
+      - uses: actions/cache@v6
+        with:
+          path: toolchain/release-dl
+          key: release-dl-${{ runner.os }}-${{ hashFiles('tools/make_release.py', 'tools/make_release_linux.py') }}
+          restore-keys: release-dl-${{ runner.os }}-
+      - uses: ./.github/actions/software-vulkan
+      - name: MSYS2 gcc and make for hactool
+        run: C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed make mingw-w64-ucrt-x86_64-gcc"
+      - run: python tools/build_hactool.py
+      - run: python tools/build_xlate.py
+      - run: python tools/make_release.py --out build/release/XC2-Setup --zip build/release/${{ env.PACKAGE }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PACKAGE }}
+          path: build/release/${{ env.PACKAGE }}
+          if-no-files-found: error
+          compression-level: 0
+
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PACKAGE: XC2-Setup-${{ needs.version.outputs.version }}-linux.AppImage
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - run: python -m pip install pillow==12.3.0
+      - uses: actions/cache@v6
+        with:
+          path: toolchain/release-dl
+          key: release-dl-${{ runner.os }}-${{ hashFiles('tools/make_release.py', 'tools/make_release_linux.py') }}
+          restore-keys: release-dl-${{ runner.os }}-
+      - uses: ./.github/actions/software-vulkan
+      - run: sudo apt-get install -y make pkg-config
+      - run: >-
+          xvfb-run -a python tools/make_release_linux.py --out build/release/XC2-Setup-linux
+          --appimage build/release/${{ env.PACKAGE }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PACKAGE }}
+          path: build/release/${{ env.PACKAGE }}
+          if-no-files-found: error
+          compression-level: 0
+
+  # A fresh runner with none of the build's toolchain: each package unpacks and passes the check-only installer pass.
+  verify:
+    needs: [version, windows, linux]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            package: XC2-Setup-${{ needs.version.outputs.version }}-windows.zip
+            wrapper: ""
+          - runner: ubuntu-24.04
+            package: XC2-Setup-${{ needs.version.outputs.version }}-linux.AppImage
+            wrapper: xvfb-run -a
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - uses: ./.github/actions/software-vulkan
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.package }}
+          path: dist
+      - run: ${{ matrix.wrapper }} python tools/check_release.py dist/${{ matrix.package }}
+
+  draft:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [version, verify]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --generate-notes
+          --title "XC2 Recomp ${{ needs.version.outputs.version }}"

@@ -1,0 +1,37 @@
+name: Software Vulkan
+description: >
+  A Vulkan loader and Mesa's CPU driver. The installer's host check stops without a Vulkan 1.3 device (installer/steps.py)
+  and runners have no GPU. On Linux also what the setup window needs on a display-less runner.
+
+runs:
+  using: composite
+  steps:
+    - if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers xvfb xauth libxft2 libfontconfig1 \
+          libxss1 fonts-dejavu-core
+
+    # check_bundle in tools/make_release.py runs the installer with a clean environment and PATH, so the loader goes
+    # where the Vulkan runtime installer puts it (System32) and the driver into the registry, not into VK_DRIVER_FILES.
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        function Fetch($url, $file, $sha256) {
+          Invoke-WebRequest $url -OutFile $file
+          if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $sha256) { throw "$file does not match its pinned hash" }
+        }
+        $work = "$env:RUNNER_TEMP\software-vulkan"
+        New-Item -ItemType Directory -Force $work | Out-Null
+        Fetch 'https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Installer.exe' `
+          "$work\VulkanRT.exe" '3F03BDA2522D1D10D05461CE8A47364F9AF6F5DC8642B7C45E43943DBA164303'
+        Start-Process "$work\VulkanRT.exe" -ArgumentList '/S' -Wait
+        Fetch 'https://github.com/pal1000/mesa-dist-win/releases/download/26.2.5/mesa3d-26.2.5-release-msvc.7z' `
+          "$work\mesa.7z" '997123EF4CE8896204AB912D5B54F19372C487FF9835BCEFAFA2FCA23B8953C2'
+        7z x "$work\mesa.7z" "-o$work\mesa" -y | Out-Null
+        $icd = (Get-ChildItem "$work\mesa\x64" -Filter 'lvp_icd*.json').FullName
+        New-Item -Force 'HKLM:\SOFTWARE\Khronos\Vulkan\Drivers' | Out-Null
+        New-ItemProperty 'HKLM:\SOFTWARE\Khronos\Vulkan\Drivers' -Name $icd -Value 0 -PropertyType DWord | Out-Null
+        Get-Item "$env:SystemRoot\System32\vulkan-1.dll"

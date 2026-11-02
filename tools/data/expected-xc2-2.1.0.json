@@ -1,0 +1,16 @@
+{
+  "version": "2.1.0",
+  "display_version": "XC2 2.1.0",
+  "exefs_sha256": {
+    "main": "17ee3f693405d2cd2e2929d3911db95dc5e628408edb58753e73f530587661ce",
+    "sdk": "bbe0ce6e6803d2793165733f1667ebc6eb204ca7d54adb2c8030e4542d22a52c",
+    "subsdk0": "6d5a18e3bdd5a8e1fedd70b9213d3269425c3c8254055d423aecd98179107da4",
+    "rtld": "3522d56dda056d4c7ba6f9508d6d1805d9a751b5a189a8700f9714ce06fb6c5a",
+    "main.npdm": "40ffc5ccfa538ae8d8a1ec93be6bd3e11b7b50dc2af50ac8d5e327d2b7d1f551"
+  },
+  "title_id": "0100E95004038000",
+  "romfs": {
+    "size": 14014281876,
+    "sha256": "fc69a4ae6b28a322becc4855ce7b316ef42b4418b101b808e924b0f1ac881176"
+  }
+}
