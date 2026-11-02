@@ -1,16 +1,29 @@
-# Builds the release packages with no game files and checks them on a second runner; a version tag also makes a draft
-# release, which a person publishes after the local steps in docs/installer.md ("Making a release"). Never run
-# make_release.py --prove here: it reads generated/upd and build/extracted/upd, which are game-derived and stay local.
+# Builds the release packages with no game files and checks them on a second runner. A merge to main or a version tag
+# then keeps the draft release of VERSION current (created on the first build, its packages replaced on later ones),
+# which a person publishes after the local steps in docs/installer.md ("Making a release"); once v<VERSION> is
+# published, later merges only build and check until VERSION changes. Never run make_release.py --prove here: it reads
+# generated/upd and build/extracted/upd, which are game-derived and stay local.
 name: Release
 
 on:
   push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# A newer merge supersedes a main build still running; tag builds always finish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
 
 jobs:
   version:
@@ -121,7 +134,7 @@ jobs:
       - run: ${{ matrix.wrapper }} python tools/check_release.py dist/${{ matrix.package }}
 
   draft:
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.event_name == 'push'
     needs: [version, verify]
     runs-on: ubuntu-24.04
     permissions:
@@ -134,6 +147,17 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --generate-notes
-          --title "XC2 Recomp ${{ needs.version.outputs.version }}"
+          TAG: v${{ needs.version.outputs.version }}
+          TITLE: XC2 Recomp ${{ needs.version.outputs.version }}
+        run: |
+          state=$(gh release view "$TAG" --json isDraft --jq 'if .isDraft then "draft" else "published" end' 2>/dev/null || echo none)
+          case "$state" in
+          none)
+            # A draft's tag is made when it is published, on this commit unless the draft is refreshed by a later merge
+            gh release create "$TAG" dist/* --draft --target "$GITHUB_SHA" --generate-notes --title "$TITLE" ;;
+          draft)
+            gh release edit "$TAG" --target "$GITHUB_SHA"
+            gh release upload "$TAG" dist/* --clobber ;;
+          published)
+            echo "::notice::$TAG is already published; raise VERSION for the next release" ;;
+          esac
