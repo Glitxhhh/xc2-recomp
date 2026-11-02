@@ -2,7 +2,7 @@
 // written per install by recomp/gen.py, and modules.c and the generated code compile against it. So the runtime outside
 // INSTALL_SIDE (tools/build_game.py) may read only these two, which no module size changes; any other MOD_ macro fails
 // the release build here. MOD_MAIN_BASE is FIRST_BASE of recomp/layout.py; MOD_COUNT is the modules of exefs_sha256 in
-// tools/data/expected-xc2-2.2.1.json that recomp/layout.py places. --prove compares both with generated/upd/layout.h.
+// tools/data/expected-xc2-3.0.1.json that recomp/layout.py places. --prove compares both with generated/upd/layout.h.
 #pragma once
 
 #define MOD_MAIN_BASE 0x7000000000ull
