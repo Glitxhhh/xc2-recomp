@@ -153,11 +153,14 @@ Each run builds `XC2-Setup-<version>-windows.zip` on Windows and `XC2-Setup-<ver
 For a test build, start the Release workflow on a branch from the Actions tab (or `gh workflow run release.yml --ref
 <branch>`). The packages are the run's artifacts.
 
+Every merge to `main` that changes more than docs runs the same build. A passing run keeps the draft release of
+`v<VERSION>` current: the first one creates it with generated notes, later ones point it at their commit and replace
+its packages. Once `v<VERSION>` is published, merges only build and check until `VERSION` changes.
+
 For a release:
 
-1. On the release branch, bump `VERSION` and push.
-2. Tag that commit `v<VERSION>` and push the tag. A tag that differs from `VERSION` stops the run. A passing run
-   creates a draft release with both packages and generated notes.
+1. Bump `VERSION` in a pull request and merge it. The merge's run creates the draft release with both packages.
+2. Pushing a `v<VERSION>` tag does the same for a tagged commit; a tag that differs from `VERSION` stops the run.
 3. Prove the packages locally. `--prove` reads `generated/upd`, `build/extracted/upd` and `build/upd/shaders`, which are
    game-derived, so it never runs on a runner. Its shader probes need a census: make one once, from the shaders a local
    2.0.0 build met in play (`build/upd/shader-programs.bin`). Download both packages from the draft, then:
@@ -171,8 +174,8 @@ For a release:
    ```
 
 4. Install from both packages with real game files and play the build.
-5. Publish the draft (a person, on the release page or with `gh release edit v<VERSION> --draft=false --latest`), then
-   merge the release branch.
+5. Publish the draft (a person, on the release page or with `gh release edit v<VERSION> --draft=false --latest`), which
+   tags the draft's commit `v<VERSION>`.
 
 Without Actions, the same two scripts build the packages locally; on Windows run `tools/build_hactool.py` and
 `tools/build_xlate.py` first (`tools/make_release.py` copies their output).
