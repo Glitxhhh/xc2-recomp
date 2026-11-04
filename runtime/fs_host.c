@@ -531,16 +531,22 @@ static uint32_t host_path_kind(const char *path, char *out, size_t cap, int *kin
     if (k == M_FREE) return FS_R_PATH_NOT_FOUND;
     if (kind) *kind = k;
     const char *rest = colon + 1;
-    for (const char *q = rest + 1; *q;) {
+    while (*rest == '/') ++rest;
+    if (!*rest) {
+        if (snprintf(out, cap, "%s", root) >= (int)cap) return FS_R_INVALID_PATH;
+        return 0;
+    }
+    // Collapse repeated separators before the component checks: the game joins a mount root and a leading-slash
+    // resource, so a field BGM request arrives as "aoc1://stream//bgm/m58.nop".
+    char rel[PATH_CAP];
+    if (!romfs_path_normalize(rest, rel, sizeof rel)) return FS_R_INVALID_PATH;
+    for (const char *q = rel; *q;) {
         const char *e = strchr(q, '/');
         size_t len = e ? (size_t)(e - q) : strlen(q);
-        if (!e && !len) break;
         if (!component_ok(q, len)) return FS_R_INVALID_PATH;
         q = e ? e + 1 : q + len;
     }
-    if (snprintf(out, cap, "%s%s", root, rest) >= (int)cap) return FS_R_INVALID_PATH;
-    size_t L = strlen(out);
-    while (L > strlen(root) && out[L - 1] == '/') out[--L] = 0;
+    if (snprintf(out, cap, "%s/%s", root, rel) >= (int)cap) return FS_R_INVALID_PATH;
     return 0;
 }
 
@@ -1179,24 +1185,31 @@ static void probe_paths(void) {
     static const struct { const char *path, *want; } cases[] = {
         {"rom:/a/b.bin", "a/b.bin"}, {"rom://a/b.bin", "a/b.bin"}, {"rom:///a/b.bin", "a/b.bin"},
         {"rom:/a", "a"},             {"rom:/../main", NULL},       {"rom://../a", NULL},
-        {"rom:/a/../b", NULL},       {"rom:/a/./b", NULL},         {"rom:/a//b", NULL},
+        {"rom:/a/../b", NULL},       {"rom:/a/./b", NULL},         {"rom:/a//b", "a/b"},
+        {"rom:/a///b/", "a/b"},      {"rom:/a//../b", NULL},       {"rom:/a//./b", NULL},
+        {"rom:/stream//bgm/m58.nop", "stream/bgm/m58.nop"},
         {"rom:/a\\b", NULL},         {"rom:/", NULL},              {"rom://", NULL},
         {"rom:a", NULL},             {"ro:/a", NULL},              {"romx:/a", NULL},
         {"rom:/.", NULL},            {"rom:/..", NULL},            {"ROM:/a", NULL},
     };
     int bad = 0;
     for (unsigned i = 0; i < sizeof cases / sizeof *cases; i++) {
-        const char *got = romfs_path_relative("rom", cases[i].path);
-        if (cases[i].want ? !got || strcmp(got, cases[i].want) : got != NULL) {
+        char got[64];
+        int ok = romfs_path_relative("rom", cases[i].path, got, sizeof got);
+        if (cases[i].want ? !ok || strcmp(got, cases[i].want) : ok) {
             bad++;
-            printf("  FAIL: romfs_path_relative(\"rom\", \"%s\") = %s%s%s\n", cases[i].path, got ? "\"" : "",
-                   got ? got : "NULL", got ? "\"" : "");
+            printf("  FAIL: romfs_path_relative(\"rom\", \"%s\") = %s%s%s\n", cases[i].path, ok ? "\"" : "",
+                   ok ? got : "NULL", ok ? "\"" : "");
         }
     }
     checks++;
     failures += bad > 0;
-    CHECK(!romfs_path_relative(NULL, "rom:/a") && !romfs_path_relative("", ":/a") && !romfs_path_relative("rom", NULL),
-          "romfs_path_relative accepts an empty mount or path");
+    char out[8];
+    CHECK(!romfs_path_relative(NULL, "rom:/a", out, sizeof out) &&
+              !romfs_path_relative("", ":/a", out, sizeof out) &&
+              !romfs_path_relative("rom", NULL, out, sizeof out) &&
+              !romfs_path_relative("rom", "rom:/a", out, 1),
+          "romfs_path_relative accepts an empty mount or path, or writes past a short buffer");
     printf("paths: %u romfs_path.h normalisation cases: %s\n", (unsigned)(sizeof cases / sizeof *cases),
            bad ? "FAIL" : "ok");
 }
@@ -1532,11 +1545,15 @@ static void probe_storage(void) {
     CHECK(RES(S_CREATE_FILE, U("save:/a\\b"), 0) == FS_R_INVALID_PATH, "save:/a\\b");
     CHECK(RES(S_CREATE_FILE, U("save:/a:b"), 0) == FS_R_INVALID_PATH, "save:/a:b");
     CHECK(RES(S_CREATE_FILE, U("save:/a."), 0) == FS_R_INVALID_PATH, "save:/a.");
+    CHECK(RES(S_OPEN_FILE, U(&h), U("save://probe.sav"), FS_OPEN_READ) == 0, "save://probe.sav");
+    CALL(S_CLOSE_FILE, h);
     CHECK(RES(S_CREATE_FILE, U("nomount:/x"), 0) == FS_R_PATH_NOT_FOUND, "a path on no mount");
 
     // directories
     CHECK(RES(S_CREATE_DIRECTORY, U("save:/dir")) == 0 && RES(S_CREATE_FILE, U("save:/dir/inner.bin"), 8) == 0,
           "CreateDirectory");
+    CHECK(RES(S_OPEN_FILE, U(&h), U("save://dir//inner.bin"), FS_OPEN_READ) == 0, "save://dir//inner.bin");
+    CALL(S_CLOSE_FILE, h);
     CHECK(RES(S_ENTRY_TYPE, U(&type), U("save:/dir")) == 0 && type == FS_ENTRY_DIRECTORY, "GetEntryType (directory)");
     static DirectoryEntry ents[8];
     CHECK(RES(S_OPEN_DIRECTORY, U(&d), U("save:/"), 3) == 0, "OpenDirectory");
