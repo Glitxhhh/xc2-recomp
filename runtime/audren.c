@@ -350,6 +350,38 @@ static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) 
     }
 }
 
+// XC2_TRACE=audio: every voice the game has started, once per 1000 render frames (5 s). A music stream is one voice per
+// channel, so this separates a stream that plays at zero gain (the game's own volume reached the mix) from one with no
+// started voice or no queued buffer (the stream stopped feeding). Gain is the voice volume times the loudest send of
+// any of its channels; audio_mixer_render routes through the same channel records. Render thread, lock held.
+static void voices_census(const AudioRenderer *r) {
+    int used = 0, started = 0, paused = 0;
+    for (int i = 0; i < r->param.voice_count; i++) {
+        const ServerVoice *v = &r->voices[i];
+        if (!v->in.in_use) continue;
+        used++;
+        started += v->state == SV_STARTED;
+        paused += v->state == SV_PAUSED;
+    }
+    rt_log("audren: voices at frame %llu: %d in use, %d started, %d paused", (unsigned long long)r->elapsed_frames, used,
+           started, paused);
+    for (int i = 0; i < r->param.voice_count; i++) {
+        const ServerVoice *v = &r->voices[i];
+        if (!v->in.in_use || v->state != SV_STARTED) continue;
+        float send = 0;
+        for (uint32_t c = 0; c < v->in.channel_count && c < 6; c++) {
+            int32_t id = v->in.channel_ids[c];
+            if (id < 0 || id >= r->param.voice_count * 6) continue;
+            for (int b = 0; b < 24; b++)
+                if (r->channels[id].mix[b] > send) send = r->channels[id].mix[b];
+        }
+        int queued = v->valid[0] + v->valid[1] + v->valid[2] + v->valid[3];
+        rt_log("audren:   voice %d: format %u, %u Hz, pitch %.3f, gain %.4f, mix %d, %d buffers queued, %u consumed", i,
+               v->in.sample_format, v->in.sample_rate, (double)v->in.pitch, (double)(v->in.volume * send), v->in.mix_id,
+               queued, v->consumed);
+    }
+}
+
 static void render_thread(void *p) {
     AudioRenderer *r = p;
     plat_thread_priority(PLAT_PRIO_HIGHEST);
@@ -363,6 +395,7 @@ static void render_thread(void *p) {
             audio_mixer_render(r, frame);
             for (int i = 0; i < r->param.voice_count; i++) advance_voice(r, &r->voices[i], frame);
             r->elapsed_frames++;
+            if ((rt_trace & RT_TRACE_AUDIO) && r->elapsed_frames % 1000 == 0) voices_census(r);
             uint64_t given = r->stop_released + r->empty_played + r->flushed;
             if ((rt_trace & RT_TRACE_IPC) && given != r->logged_released && r->elapsed_frames % 1000 == 0) {
                 r->logged_released = given;
