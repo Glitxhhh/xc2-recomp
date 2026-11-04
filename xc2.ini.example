@@ -82,7 +82,7 @@
 # push_skip = 1
 # Submit GPU work in parts every N draws between passes so the GPU starts earlier (0 to 1000; 0 = off), each part at
 # least split_us microseconds long (0 to 20000).
-# split_draws = 64
+# split_draws = 32
 # split_us = 1000
 
 # Vulkan.
