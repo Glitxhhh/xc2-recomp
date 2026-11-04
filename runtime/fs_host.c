@@ -27,7 +27,6 @@
 #include "platform/platform.h"
 #include "romfs_path.h"
 
-#define XC2_APPLICATION_ID 0x010074f013262000ull   // XC2 (the name stays to keep the diff against XC2 Recomp small)
 #define FILE_BASE 0x200000000ull
 #define DIR_BASE 0x300000000ull
 #define NFILES 1024
