@@ -1,0 +1,153 @@
+{
+  "name": "xc2-1.0.0",
+  "generated": "v0",
+  "modules": {
+    "main": {
+      "functions": 49909,
+      "chunks": 61,
+      "all_label_fallbacks": 8,
+      "unsupported": 0,
+      "c_bytes": 173367015,
+      "instructions": 2553076,
+      "jump_tables": 886,
+      "jump_table_targets": 5879,
+      "br_dispatch": 2165,
+      "traps": 15,
+      "external_branches": 0,
+      "external_calls": 0,
+      "timings": {
+        "discover_s": 0.48,
+        "emit_wall_s": 17.09,
+        "emit_worker_s": 209.22,
+        "table_s": 0.04
+      }
+    },
+    "subsdk0": {
+      "functions": 13379,
+      "chunks": 21,
+      "all_label_fallbacks": 2,
+      "unsupported": 0,
+      "c_bytes": 53188509,
+      "instructions": 774509,
+      "jump_tables": 472,
+      "jump_table_targets": 3485,
+      "br_dispatch": 3716,
+      "traps": 10,
+      "external_branches": 0,
+      "external_calls": 0,
+      "timings": {
+        "discover_s": 0.09,
+        "emit_wall_s": 16.78,
+        "emit_worker_s": 65.19,
+        "table_s": 0.01
+      }
+    },
+    "sdk": {
+      "functions": 27352,
+      "chunks": 30,
+      "all_label_fallbacks": 3,
+      "unsupported": 0,
+      "c_bytes": 70350296,
+      "instructions": 1014318,
+      "jump_tables": 431,
+      "jump_table_targets": 3196,
+      "br_dispatch": 6928,
+      "traps": 35,
+      "external_branches": 0,
+      "external_calls": 0,
+      "timings": {
+        "discover_s": 0.17,
+        "emit_wall_s": 16.66,
+        "emit_worker_s": 89.2,
+        "table_s": 0.02
+      }
+    }
+  },
+  "totals": {
+    "functions": 90640,
+    "c_bytes": 296905820,
+    "all_label_fallbacks": 13,
+    "unsupported": 0,
+    "chunks": 112,
+    "instructions": 4341903,
+    "jump_tables": 1789,
+    "jump_table_targets": 12560,
+    "br_dispatch": 12809,
+    "traps": 60,
+    "external_branches": 0,
+    "external_calls": 0
+  },
+  "unsupported_census": {},
+  "lifter_wall_s": 18.9,
+  "jumptables": {
+    "main": {
+      "functions": 49887,
+      "br": 3059,
+      "computed": 894,
+      "resolved": 886,
+      "entries": 5879,
+      "oracle resolved": 826,
+      "agree": 818,
+      "disagree": 0,
+      "oracle wrong": 2,
+      "only resolver": 66,
+      "only oracle": 6,
+      "only oracle, oracle wrong": 0,
+      "computed, unresolved": 2,
+      "resolved, not computed": 0,
+      "targets outside function": 2,
+      "base local": 826,
+      "base verified": 59,
+      "base not verified": 1,
+      "PLT stubs": 390,
+      "PLT stubs computed or resolved": 0
+    },
+    "sdk": {
+      "functions": 26656,
+      "br": 7362,
+      "computed": 434,
+      "resolved": 431,
+      "entries": 3196,
+      "oracle resolved": 390,
+      "agree": 389,
+      "disagree": 0,
+      "oracle wrong": 0,
+      "only resolver": 42,
+      "only oracle": 0,
+      "only oracle, oracle wrong": 1,
+      "computed, unresolved": 2,
+      "resolved, not computed": 0,
+      "targets outside function": 1,
+      "base local": 361,
+      "base verified": 68,
+      "base not verified": 2,
+      "PLT stubs": 6265,
+      "PLT stubs computed or resolved": 0
+    },
+    "subsdk0": {
+      "functions": 13097,
+      "br": 4190,
+      "computed": 474,
+      "resolved": 472,
+      "entries": 3485,
+      "oracle resolved": 397,
+      "agree": 395,
+      "disagree": 0,
+      "oracle wrong": 0,
+      "only resolver": 77,
+      "only oracle": 2,
+      "only oracle, oracle wrong": 0,
+      "computed, unresolved": 0,
+      "resolved, not computed": 0,
+      "targets outside function": 0,
+      "base local": 365,
+      "base verified": 106,
+      "base not verified": 1,
+      "PLT stubs": 3528,
+      "PLT stubs computed or resolved": 0
+    }
+  },
+  "recorded": {
+    "commit": "79ffddb"
+  }
+}
