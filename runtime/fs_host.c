@@ -39,7 +39,7 @@ enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO, M_AOC };   // M_SAVE: the wor
                                                               // save; M_AOC: add-on content (read-only)
 
 typedef struct { int kind; char name[32]; char root[1024]; } Mount;
-typedef struct { PlatFile *h; int mode, save; } File;   // h NULL = free; save: on a save-data mount
+typedef struct { PlatFile *h; int mode, save, option; } File;   // h NULL = free; save: on a save-data mount; option: bf2option
 typedef struct { char *name; int kind; uint64_t size; } Listed;
 typedef struct { Listed *e; int n, next, mode, used; } Dir;   // the directory's entries at open; used 0 = free
 
@@ -769,7 +769,7 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     plat_mutex_lock(&lock);
     for (int i = 0; i < NFILES; i++)
         if (!files[i].h) {
-            files[i] = (File){f, mode, save_writer};
+            files[i] = (File){f, mode, save_writer, strstr(path, "bf2option") != NULL};
             *out = FILE_BASE + (uint64_t)i;
             plat_mutex_unlock(&lock);
             if (save_writer) {
@@ -782,11 +782,26 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     rt_fatal("fs: host file handle table full (%d)", NFILES);
 }
 
+// The game's volume options as stored in bf2option.sav, each file transfer that covers them. Issues #13 and #33 report
+// no music on a boot after a save while voices and effects play. The offsets are SDataOption's u16 fields, 255 meaning
+// 1.0 (gf::GfMasterVolume::setupGame and gf::GfGameUtilSaveData::setupOptionSaveData, the same fields in 1.0.0 and in
+// 3.0.1 at main+0x2e9c08): +0x54 drives category 1, the field music, and +0x62 category 3, the title music of 3.0.1
+// (main+0x14f4ec). Zeros here mean a stored mute; the defaults (153 and 127) rule the file out.
+static void log_option_volumes(const char *what, const File *file, int64_t offset, const void *data, uint64_t size) {
+    if (!file->option || offset > 0x4c || offset + (int64_t)size < 0x66) return;
+    uint16_t v[13];
+    memcpy(v, (const uint8_t *)data + (0x4c - offset), sizeof v);
+    rt_log("fs: bf2option %s (%llu bytes): field music +0x54 = %u, title music +0x62 = %u, menu music +0x64 = %u of 255; "
+           "+0x4c.. %u %u %u %u %u %u %u %u %u %u", what, (unsigned long long)size, v[4], v[11], v[12], v[0], v[1], v[2],
+           v[3], v[5], v[6], v[7], v[8], v[9], v[10]);
+}
+
 static uint32_t read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
     if (romfs_handle(h)) return romfs_read(out, h, offset, buffer, size);
     PlatFile *f;
     int mode;
-    if (!out || offset < 0 || (!buffer && size) || !file_of(h, &f, &mode)) return FS_R_INVALID_ARGUMENT;
+    const File *file = out && offset >= 0 && (buffer || !size) ? file_of(h, &f, &mode) : NULL;
+    if (!file) return FS_R_INVALID_ARGUMENT;
     if (!(mode & FS_OPEN_READ)) return FS_R_OPEN_MODE;
     uint64_t done = 0;
     while (done < size) {
@@ -797,6 +812,7 @@ static uint32_t read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffe
         done += (uint64_t)n;
     }
     *out = done;
+    log_option_volumes("read", file, offset, buffer, done);
     return 0;
 }
 
@@ -823,6 +839,7 @@ static uint32_t write_file(uint64_t h, int64_t offset, const void *buffer, uint6
         done += (uint64_t)put;
     }
     if (option && (*option & 1)) plat_file_fsync(f);   // WriteOptionFlag_Flush
+    log_option_volumes("written", file, offset, buffer, size);
     return 0;
 }
 
