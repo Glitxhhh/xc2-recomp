@@ -93,6 +93,9 @@ static void xc2_rate_store(double hz, double fps) {   // hz: the game's vsync ra
     atomic_store_explicit(&xc2_words[0], p, memory_order_release);
     atomic_store_explicit(&xc2_words[1], r, memory_order_release);
     atomic_store_explicit(&xc2_words[3], t, memory_order_release);   // +0x4c
+    float step = (float)(1.0 / fps);   // +0x50: XC2's frame step, the loads of its 1/30 constant (tools/fps_sites_xc2.py)
+    memcpy(&t, &step, 4);
+    atomic_store_explicit(&xc2_words[4], t, memory_order_release);
 }
 
 static void xc2_wait_store(double seconds) {
@@ -102,15 +105,26 @@ static void xc2_wait_store(double seconds) {
     atomic_store_explicit(&xc2_words[2], b, memory_order_release);   // +0x48
 }
 
-// The game's frame interval in vsyncs (main+0x1d943a0, the variable of the setter main+0x13a2fd8; 1.0.1's
-// main+0x1da33a0, which the 60FPS mod's cheat sets to 2 in cutscenes): 1, or 2 in a cutscene with the vsync period
-// at 1/60 s, so a cutscene runs exactly as on the console at 30 fps: lip sync counts vsyncs.
+// The game's frame interval in vsyncs, an int at main+0xb75c40 (3.0.1; setter main+0x6a4078): 2 as shipped. 1 lets
+// the frame loop's wait (main+0x6aafd8) end after one vsync period, and the set xc360 sends that wait to +0x48. Stored
+// every frame, as the game's setter may put 2 back; 2 in a cutscene keeps it at 30 fps as on the console.
 static void xc2_interval_store(int n) {
-    static int stored = 1;
+    static int stored = 0;
+    __atomic_store_n((uint32_t *)(uintptr_t)(MOD_MAIN_BASE + 0xb75c40), (uint32_t)n, __ATOMIC_RELEASE);
     if (n == stored) return;
     stored = n;
-    __atomic_store_n((uint32_t *)(uintptr_t)(MOD_MAIN_BASE + 0x1d943a0), (uint32_t)n, __ATOMIC_RELEASE);
     rt_log("frame rate: %s", n == 2 ? "cutscene, 30 fps (2 vsyncs of 1/60 s)" : "limit again");
+}
+
+// The step most of XC2's logic advances by each frame: two f32 at +0x78 and +0x7c of the object main+0xb900d0 points
+// to (3.0.1; 2.0.2 main+0xb8f0d0, where the "60 FPS + Cutscenes Speed Fix" cheat writes 1/60 there with the interval
+// 1). The game sets them to 1/30 and does not compute them per frame; without them play runs at double speed at 60
+// fps. Stored every frame, so the step follows the measured frame time.
+static void xc2_delta_store(void) {
+    uint64_t obj = 0;
+    if (!plat_mem_read(MOD_MAIN_BASE + 0xb900d0, &obj, 8) || !obj || (obj & 3) || !plat_mem_readable(obj + 0x78, 8)) return;
+    float d[2] = {(float)step_now, (float)step_now};
+    memcpy((void *)(uintptr_t)(obj + 0x78), d, sizeof d);
 }
 
 int frame_rate_paced(void) { return xc2_words != NULL; }
@@ -128,12 +142,8 @@ static int xc2_cutscene(void) {
         mode = !e ? 1 : !strcmp(e, "mixed") ? 2 : strcmp(e, "0") != 0;
     }
     if (!mode) return 0;
-    if (movie_playing()) return 1;
-    uint32_t state;
-    if (!plat_mem_read(MOD_MAIN_BASE + 0x1fefaf4, &state, 4)) return 0;
-    static uint32_t last = 0;
-    if (state != last) rt_log("frame rate: event state %u -> %u", last, state), last = state;
-    return mode == 2 ? state == 4 : state >= 2;
+    // XC2: only movies so far; its event state (XCX's main+0x1fefaf4 above) is not found yet
+    return movie_playing();
 }
 
 void frame_step_init(void) {
@@ -226,6 +236,7 @@ uint64_t frame_step_cap_ns(void) {
         else if (xc2_cut || !sample_count) xc2_rate_store(hz, hz);   // until frame_step_present has samples again
         xc2_cut = cut;
         xc2_interval_store(cut ? 2 : 1);
+        xc2_delta_store();
         if (cut) hz = 30;
         xc2_wait_store(1.0 / hz);
     }
