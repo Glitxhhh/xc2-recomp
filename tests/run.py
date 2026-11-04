@@ -2,10 +2,9 @@
 
 The checks are the ones docs/building.md ("Checks") and the test files' own docstrings mark as needing no game files.
 The exit status is 1 when a blocking check fails or cannot run on this host; a check skipped by a flag, or because it
-is for another host, does not count. Two checks run and are reported but do not block, so the runner records these
-gaps instead of hiding them: tools/check_platform.py, because runtime/kernel.c and runtime/main.c still use Win32
-directly, and tests/excl_mt.py, because its ABA cases fail on the compare-and-swap in runtime/cpu.h. While excl-mt does
-not block, a wrong total in its contention cases does not fail the run either: read its output.
+is for another host, does not count. One check runs and is reported but does not block, so the runner records the gap
+instead of hiding it: tools/check_platform.py, because runtime/kernel.c and runtime/main.c still use Win32 directly.
+tests/excl_mt.py blocks: it prints its ABA cases as a known gap and fails only on a wrong contention total.
 
 Two interpreters take part, as docs/building.md lays out. The lifter environment (.venv, Python 3.12, with the
 unicorn, capstone and lz4 wheels of tools/requirements.txt) runs the lifter and CPU-header checks, which import
@@ -63,11 +62,9 @@ CHECKS = [
           note='Windows only: it asserts directory junctions'),
     Check('spin-waits', 'tests/spin_waits_test.py', 'lifter', modules=('capstone', 'lz4')),
     Check('flags', 'tests/flags_check.py', 'lifter', modules=WHEELS, compiles=True),
-    # Its three ABA cases fail: runtime/cpu.h stx##N and stxp128 are a compare-and-swap, which cannot see X->Y->X, so the
-    # whole test exits 1 today. It runs so the log shows the cases, and it blocks again once that gap is closed or
-    # recorded in the test itself.
-    Check('excl-mt', 'tests/excl_mt.py', 'lifter', modules=WHEELS, compiles=True, blocking=False,
-          note='not blocking: the ABA cases fail, the compare-and-swap in runtime/cpu.h cannot see X->Y->X'),
+    # Its three ABA cases are a known gap (runtime/cpu.h stx##N and stxp128 are a compare-and-swap, which cannot see
+    # X->Y->X): the test prints them and leaves its exit code alone, so a wrong contention total fails the run.
+    Check('excl-mt', 'tests/excl_mt.py', 'lifter', modules=WHEELS, compiles=True),
     Check('atomic', 'tests/diff/atomic.py', 'lifter', modules=WHEELS, compiles=True, diff=True),
     Check('simd', 'tests/diff/simd.py', 'lifter', modules=WHEELS, compiles=True, diff=True),
     # runtime/kernel.c and runtime/main.c use Win32 directly, so this check fails today. It runs so the log shows the
