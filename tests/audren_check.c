@@ -35,23 +35,27 @@ typedef struct {
 static Fixture fixture(int count, unsigned revision) {
     Fixture f = {0};
     f.r.param = (AudrenParameter){.sample_rate = 48000, .sample_count = 240,
-        .voice_count = count, .sink_count = 1};
+        .voice_count = count, .sink_count = 1, .effect_count = 3, .submix_count = 4};
     f.r.voices = calloc(count, sizeof *f.r.voices);
-    f.r.pools = calloc(4 * count, sizeof *f.r.pools);
+    f.r.pools = calloc(4 * count + 3, sizeof *f.r.pools);
     f.r.channels = calloc(6 * count, sizeof *f.r.channels);
     f.r.sinks = calloc(1, sizeof *f.r.sinks);
+    f.r.effects = calloc(3, sizeof *f.r.effects);
     f.h = (AudrenHeader){.revision = AUDREN_REV(revision), .behavior = 16,
-        .memory_pools = 4 * count * sizeof(AudrenPoolIn),
+        .memory_pools = (4 * count + 3) * sizeof(AudrenPoolIn),
+        .voice_resources = count * sizeof(AudrenChannelIn),
         .voices = count * (revision >= 15 ? sizeof(AudrenVoiceInV2) : sizeof(AudrenVoiceIn)),
-        .sinks = sizeof(AudrenSinkIn)};
-    f.h.total = sizeof f.h + f.h.behavior + f.h.memory_pools + f.h.voices + f.h.sinks;
+        .effects = 3 * sizeof(AudrenEffectIn), .mixes = 5 * sizeof(AudrenMixIn),
+        .sinks = sizeof(AudrenSinkIn), .performance = 16};
+    f.h.total = sizeof f.h + f.h.behavior + f.h.memory_pools + f.h.voice_resources + f.h.voices +
+        f.h.effects + f.h.mixes + f.h.sinks + f.h.performance;
     f.input = calloc(1, f.h.total);
     memcpy(f.input, &f.h, sizeof f.h);
-    f.voice_at = sizeof f.h + f.h.behavior + f.h.memory_pools;
+    f.voice_at = sizeof f.h + f.h.behavior + f.h.memory_pools + f.h.voice_resources;
     // Leave room for the separately tested render-info reply on older revisions.
-    f.output_size = sizeof(AudrenHeader) + 4 * count * sizeof(AudrenPoolOut) +
-        count * sizeof(AudrenVoiceOut) + sizeof(AudrenSinkOut) + 16 + AUDREN_BEHAVIOR_OUT +
-        AUDREN_RENDER_INFO_OUT;
+    f.output_size = sizeof(AudrenHeader) + (4 * count + 3) * sizeof(AudrenPoolOut) +
+        count * sizeof(AudrenVoiceOut) + 3 * (revision >= 9 ? 0x90 : 0x10) + sizeof(AudrenSinkOut) +
+        16 + AUDREN_BEHAVIOR_OUT + AUDREN_RENDER_INFO_OUT;
     f.output = calloc(1, f.output_size);
     return f;
 }
@@ -59,6 +63,7 @@ static Fixture fixture(int count, unsigned revision) {
 static void dispose(Fixture *f) {
     free(f->input); free(f->output);
     free(f->r.voices); free(f->r.pools); free(f->r.channels); free(f->r.sinks);
+    free(f->r.effects);
 }
 
 static void put_voice(Fixture *f, unsigned slot, AudrenVoiceIn v) {
@@ -159,11 +164,38 @@ static void full_voice_table(void) {
     dispose(&f);
 }
 
+static void reply_bounds(unsigned revision) {
+    Fixture f = fixture(96, revision);
+    if (revision < 5) f.output_size -= AUDREN_RENDER_INFO_OUT;
+    // Match the 96-voice REV3 request and reply sizes in issue #29's log.
+    if (revision == 3) assert(f.h.total == 71216 && f.output_size == 8064);
+    free(f.output);
+    f.output = malloc(f.output_size + 16);
+    memset(f.output, 0xa5, f.output_size + 16);
+    f.r.elapsed_frames = 123;
+    update(&f);
+    AudrenHeader reply;
+    memcpy(&reply, f.output, sizeof reply);
+    assert(reply.total == f.output_size);
+    assert(reply.render_info == (revision < 5 ? 0 : AUDREN_RENDER_INFO_OUT));
+    for (size_t i = f.output_size; i < f.output_size + 16; i++) assert(f.output[i] == 0xa5);
+    if (reply.render_info) {
+        uint64_t frames;
+        memcpy(&frames, f.output + reply.total - reply.render_info, sizeof frames);
+        assert(frames == 123);
+    }
+    dispose(&f);
+}
+
 int main(void) {
     inactive_entries(3);
     inactive_entries(15);
     stream_resume();
     full_voice_table();
+    reply_bounds(3);
+    reply_bounds(5);
+    reply_bounds(15);
     puts("audren: inactive entries, REV3/REV15, stream resume, pause and 96 voices passed");
+    puts("audren: exact-size REV3/REV5/REV15 replies preserve the trailing guard");
     return 0;
 }

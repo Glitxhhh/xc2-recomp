@@ -319,7 +319,7 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     }
     w += 0x10;                    // performance: nothing written
     w += AUDREN_BEHAVIOR_OUT;     // behavior: no errors
-    memcpy(w, &r->elapsed_frames, 8);
+    if (o.render_info) memcpy(w, &r->elapsed_frames, sizeof r->elapsed_frames);
     plat_mutex_unlock(&r->lock);
 }
 
