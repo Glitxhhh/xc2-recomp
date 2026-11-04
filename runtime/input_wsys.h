@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 // ---- what the back end provides
-int ikb_foreground(void);                     // the game window is in front: keys count
+int ikb_foreground(void);                     // the game window is in front: keys and the gamepad count
 int ikb_down(int key);                        // key id (input_map.h KEY_*) held, mouse buttons included
 int ikb_escape(void);                         // Esc held (no key id: it belongs to the menu)
 int ikb_captured(void);                       // the cursor is captured for the mouse camera

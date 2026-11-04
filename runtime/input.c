@@ -404,11 +404,27 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
     return read_snap.connected;
 }
 
+// The gamepad acts only while the game window is in front, like the keys and the mouse in poll_merged: SDL delivers pad
+// reports to a window behind others too, so an Alt-Tabbed game would keep moving. XC2_BACKGROUND_WINDOW and
+// XC2_ASSUME_FOCUS (read as gfx_window_win.c and ov_system.c read them, once) keep it live for runs without the focus.
+static int pad_may_act(void) {
+    static volatile int32_t ignore = -1;
+    int32_t v = ignore;
+    if (v < 0) {
+        const char *bg = cfg_get("XC2_BACKGROUND_WINDOW"), *assume = cfg_get("XC2_ASSUME_FOCUS");
+        v = (bg && atoi(bg)) || (assume && atoi(assume));
+        plat_xchg32(&ignore, v);
+    }
+    return v || ikb_foreground();
+}
+
 // Under lock, state 1: the open gamepad's buttons (Switch bits after XC2_PAD_LAYOUT and the XC2_BIND_* lines) and
-// sticks; 0 without a connected gamepad.
+// sticks, left as the caller set them when the gamepad may not act (pad_may_act); 0 without a connected gamepad. A pad
+// that may not act still counts as connected, so the menu keeps its gamepad navigation (ui/menu.cpp, pad_events).
 static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
     if (!pad_physical(pd)) return 0;
+    if (!pad_may_act()) return 1;
     *b |= input_map_pad_buttons(pd, pad_layout_get());
     sl[0] = axis(read_snap.axes[0]);
     sl[1] = -axis(read_snap.axes[1]);
@@ -554,7 +570,7 @@ int input_capture(int reset, int *id) {
     int esc = fg && ikb_escape();
     plat_mutex_lock(&lock);
     if (!state) start();
-    if (state == 1) pad_physical(p);
+    if (state == 1 && pad_may_act()) pad_physical(p);
     plat_mutex_unlock(&lock);
     int got = INPUT_CAPTURE_NONE;
     if (!reset) {
@@ -579,6 +595,9 @@ int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
     static int triggers = -1;
     static unsigned seen;
     if (triggers < 0 || seen != cfg_version()) seen = cfg_version(), triggers = input_rumble_triggers_enabled();
+    // The game keeps streaming vibration while the window is behind others: silent until the focus returns, when the
+    // next renewal (ov_input.c, rumble_update) starts the motors again. pad_main stops them at the moment of the loss.
+    if (!pad_may_act()) low = high = 0, ms = 0;
     plat_mutex_lock(&sdl_lock);
     if (state == 1 && pad && pad_rumble) {
         ok = SDL_RumbleGamepad(pad, low, high, ms);
@@ -634,17 +653,25 @@ int input_motion_enabled(void) {
 }
 
 // 250 Hz: the gamepads update (reports read, rumble expiry), the snapshot the game reads is published and the newest
-// gyro and accelerometer sample goes into the fusion. Without a gamepad with sensors, or with motion off (XC2_MOTION=0,
-// live), nothing is fed and the six-axis sensor reads at rest.
+// gyro and accelerometer sample goes into the fusion. Without a gamepad with sensors, with motion off (XC2_MOTION=0,
+// live) or while the gamepad may not act (pad_may_act), nothing is fed and the six-axis sensor reads at rest. Losing the
+// focus also stops the motors at once: a send already running would otherwise last out its RUMBLE_MS (ov_input.c).
 static void pad_main(void *arg) {
     (void)arg;
+    int could_act = 1;
     for (;;) {
         plat_wait_ns(4000000);
         float a[3], g[3];
         int have = 0;
         PadSnap s;
+        int can_act = pad_may_act();
         plat_mutex_lock(&sdl_lock);
         pad_sample(&s);
+        if (could_act && !can_act && pad) {
+            SDL_RumbleGamepad(pad, 0, 0, 0);
+            SDL_RumbleGamepadTriggers(pad, 0, 0, 0);   // unsupported pads return false: ignored
+        }
+        could_act = can_act;
         if (s.connected)
             have = sensors_ready() && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
                    SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);
@@ -652,7 +679,7 @@ static void pad_main(void *arg) {
         plat_mutex_lock(&snap_lock);
         snap = s;
         plat_mutex_unlock(&snap_lock);
-        if (!have || !input_motion_enabled()) continue;
+        if (!have || !can_act || !input_motion_enabled()) continue;
         double acc[3], gyro[3];
         input_motion_axes(a, g, acc, gyro);
         motion_feed(motion_global(), acc, gyro, kern_now_ns());
