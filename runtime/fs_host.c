@@ -97,12 +97,47 @@ static char *join(const char *dir, const char *name) {
 // (XC2 writes a slot's files back to back and then commits; between the files nothing is open for a moment).
 static volatile int32_t save_writers, save_dirty;
 static volatile int64_t save_changed_ns;
-static void save_wait_commit(void);
-static void save_touched(void) {
-    save_wait_commit();   // every change to save data comes here first: none lands in a commit's snapshot
+
+// tx_lock: exclusive around a Commit's run and the working copy's creation and deletion, shared around each change to
+// the working copy. Taken before lock, never inside it. Not recursive: a change must not start another one.
+static PlatMutex tx_lock = PLAT_MUTEX_INIT;
+
+// The background commit: commit_pending from the game's Commit until the thread has run save_commit_locked.
+static PlatMutex pend_lock = PLAT_MUTEX_INIT;
+static PlatCond pend_cv = PLAT_COND_INIT;
+static volatile int32_t commit_pending;
+
+static void save_wait_commit(void) {
+    if (!plat_cas32(&commit_pending, 0, 0)) return;
+    plat_mutex_lock(&pend_lock);
+    while (plat_cas32(&commit_pending, 0, 0)) plat_cond_wait(&pend_cv, &pend_lock);
+    plat_mutex_unlock(&pend_lock);
+}
+
+// A change to the working copy runs between these two. Every change goes through here, so none lands in a Commit's
+// copy and a Commit's clearing of save_dirty cannot swallow one: a Commit queued while a change runs starts when the
+// change ends and takes it; a change that comes while a Commit is queued or running waits for it. The wait holds no
+// lock, so the commit thread, which needs tx_lock exclusively, always gets through; a holder only does file I/O, and a
+// thread in a host call is not preempted (kernel.c), so the commit thread and the exit paths wait for it briefly.
+static void save_change_begin(void) {
+    for (;;) {
+        save_wait_commit();
+        plat_mutex_lock_shared(&tx_lock);
+        if (!plat_cas32(&commit_pending, 0, 0)) break;
+        plat_mutex_unlock_shared(&tx_lock);
+    }
     plat_xchg64(&save_changed_ns, (int64_t)plat_now_ns());
     plat_xchg32(&save_dirty, 1);
 }
+
+static void save_change_end(void) { plat_mutex_unlock_shared(&tx_lock); }
+
+// Save data was touched without a change of its own to protect (a handle opened or closed).
+static void save_touched(void) {
+    save_change_begin();
+    save_change_end();
+}
+
 int fs_save_busy(void) {
     if (plat_cas32(&save_writers, 0, 0) > 0) return 1;
     return plat_cas32(&save_dirty, 0, 0) &&
@@ -163,7 +198,7 @@ static int remove_tree(const char *path) {
 // (3) rename new to save/<uid>, the commit point; (4) move old to save-backup/<UTC time> and keep the newest three.
 // Both renames are durable (plat_fs_rename). The game's Commit returns 0 once steps (1) to (4) are
 // queued; a thread runs them (95-135 ms on the game thread before, in the 1.4.3 fight save) while every change to the
-// working copy waits in save_touched, and Unmount and the next Commit wait too. A crash in that time loses this Commit
+// working copy waits in save_change_begin, and Unmount and the next Commit wait too. A crash in that time loses this Commit
 // only. save/<uid> is renamed away only after new is complete on disk.
 //
 // A Commit that fails (disk full, a rename refused) leaves the committed save and must not lose what the game believes
@@ -191,7 +226,6 @@ static int remove_tree(const char *path) {
 #define COPY_CHUNK (1u << 20)
 
 static char tx_root[1100], backup_root[1100], new_root[1100], old_root[1100], failed_root[1100], failed_mark[1100];
-static PlatMutex tx_lock = PLAT_MUTEX_INIT;   // taken before lock, never inside it
 static int save_mounts;                  // M_SAVE mounts: the working copy exists while this is above 0, or after a
                                          // failed Commit (commit_failed)
 static volatile int32_t commit_failed;   // the last Commit failed and no later one succeeded
@@ -207,6 +241,8 @@ static int crashed(void) {
 // tx_crash_at the process lives on and goes through the error paths.
 enum { TX_FAIL_COPY = 1, TX_FAIL_MOVE_OLD = 2, TX_FAIL_SWAP = 4, TX_FAIL_FLUSH = 8 };
 static int tx_fail_at;
+// Probe hook: runs inside a change to a save file, before its bytes are written.
+static void (*tx_change_hook)(void);
 
 static int exists(const char *p) { return plat_fs_kind(p) != PLAT_FS_MISSING; }
 
@@ -448,16 +484,28 @@ static uint32_t save_commit_locked(void) {
     return 0;
 }
 
-// The background commit: commit_pending from the game's Commit until the thread has run save_commit_locked.
-static PlatMutex pend_lock = PLAT_MUTEX_INIT;
-static PlatCond pend_cv = PLAT_COND_INIT;
-static volatile int32_t commit_pending;
+// This thread alone gets to run a Commit: two game threads committing at once run one after the other, and
+// commit_pending stays up for the second.
+static void commit_claim(void) {
+    do save_wait_commit();
+    while (plat_cas32(&commit_pending, 1, 0));
+}
 
-static void save_wait_commit(void) {
-    if (!plat_cas32(&commit_pending, 0, 0)) return;
-    plat_mutex_lock(&pend_lock);
-    while (commit_pending) plat_cond_wait(&pend_cv, &pend_lock);
+static void commit_release(void) {
+    plat_mutex_lock(&pend_lock);   // so a waiter between its check and its sleep does not miss the broadcast
+    plat_xchg32(&commit_pending, 0);
     plat_mutex_unlock(&pend_lock);
+    plat_cond_broadcast(&pend_cv);
+}
+
+// tx_lock exclusively with no Commit queued, which would otherwise find the working copy gone.
+static void tx_lock_no_commit(void) {
+    for (;;) {
+        save_wait_commit();
+        plat_mutex_lock(&tx_lock);
+        if (!plat_cas32(&commit_pending, 0, 0)) return;
+        plat_mutex_unlock(&tx_lock);
+    }
 }
 
 // Record a Commit's outcome, tx_lock held. A process killed mid-Commit (the probe's tx_dead) records nothing.
@@ -486,10 +534,7 @@ static uint32_t commit_run(void) {
     commit_outcome(r);
     plat_dec32(&save_writers);
     plat_mutex_unlock(&tx_lock);
-    plat_mutex_lock(&pend_lock);
-    commit_pending = 0;
-    plat_mutex_unlock(&pend_lock);
-    plat_cond_broadcast(&pend_cv);
+    commit_release();
     return r;
 }
 
@@ -500,15 +545,15 @@ static void commit_main(void *arg) {
 }
 
 static uint32_t save_commit(void) {
-    save_wait_commit();   // the previous Commit
+    commit_claim();   // after the previous Commit
     static int quiet;
     if (!plat_cas32(&save_dirty, 0, 0)) {
         if (!quiet++) rt_log("fs commit save: nothing changed (logged once)");
+        commit_release();
         return 0;
     }
     int retry = plat_cas32(&commit_failed, 0, 0);
     plat_inc32(&save_writers);   // fs_save_busy until the thread is done
-    plat_xchg32(&commit_pending, 1);
     if (!retry && plat_thread_spawn(commit_main, NULL, "save commit", 0)) {
         return 0;
     }
@@ -521,11 +566,13 @@ static uint32_t save_commit(void) {
 
 // The exit paths: the running Commit finishes, and a failed one gets a last try while the process is still here.
 void fs_save_flush(void) {
-    save_wait_commit();
-    if (!plat_cas32(&commit_failed, 0, 0)) return;
+    commit_claim();
+    if (!plat_cas32(&commit_failed, 0, 0)) {
+        commit_release();
+        return;
+    }
     rt_log("fs: retrying the failed save commit before exit");
     plat_inc32(&save_writers);
-    plat_xchg32(&commit_pending, 1);
     if (commit_run())
         rt_log("fs: SAVE NOT WRITTEN at exit: the next start keeps the unwritten save in %s/<time> and loads the last "
                "one written", failed_root);
@@ -670,12 +717,22 @@ static uint32_t host_path_kind(const char *path, char *out, size_t cap, int *kin
 
 static uint32_t host_path(const char *path, char *out, size_t cap) { return host_path_kind(path, out, cap, NULL); }
 
-// A change to save data through a path (create, delete, rename, directories) marks the save as in progress.
-static uint32_t save_change_path(const char *path, char *out, size_t cap) {
+// A change to storage through a path (create, delete, rename, directories): the host path, and on the save mount the
+// start of a change (*save set), which save_path_end ends whatever the change's outcome.
+static uint32_t save_change_path(const char *path, char *out, size_t cap, int *save) {
     int kind = M_FREE;
+    *save = 0;
     uint32_t r = host_path_kind(path, out, cap, &kind);
     if (!r && (kind == M_SAVE_RO || kind == M_AOC)) return FS_R_UNSUPPORTED_OPEN;
-    if (!r && kind == M_SAVE) save_touched();
+    if (!r && kind == M_SAVE) {
+        save_change_begin();
+        *save = 1;
+    }
+    return r;
+}
+
+static uint32_t save_path_end(uint32_t r, int save) {
+    if (save) save_change_end();
     return r;
 }
 
@@ -819,8 +876,7 @@ static uint32_t read_cache_list(int *count, CacheStorageInfo *out, uint64_t h, i
 static void close_cache_list(uint64_t h) { free((void *)(uintptr_t)h); }
 
 static void unmount(const char *name) {
-    save_wait_commit();   // else the working copy could go before a Commit queued just now has copied it
-    plat_mutex_lock(&tx_lock);
+    tx_lock_no_commit();
     plat_mutex_lock(&lock);
     for (int i = 0; i < NMOUNTS; i++)
         if (name && mounts[i].kind && !strcmp(mounts[i].name, name)) {
@@ -956,15 +1012,18 @@ static uint32_t write_file(uint64_t h, int64_t offset, const void *buffer, uint6
     PlatFileId id;
     if (!plat_file_id(f, &id)) rt_fatal("fs: host save size");
     if ((uint64_t)offset + size > id.size && !(mode & FS_OPEN_APPEND)) return FS_R_APPEND_REQUIRED;
-    if (file->save) save_touched();
+    if (file->save) save_change_begin();
+    if (tx_change_hook && file->save) tx_change_hook();
     for (uint64_t done = 0; done < size;) {
         uint32_t chunk = size - done > 0x40000000 ? 0x40000000 : (uint32_t)(size - done);
         int64_t put = plat_file_pwrite(f, (const uint8_t *)buffer + done, chunk, (uint64_t)offset + done);
         if (put <= 0) rt_fatal("fs: host save write failure");
         done += (uint64_t)put;
     }
+    uint32_t r = option && (*option & 1) ? flush_handle(f) : 0;   // WriteOptionFlag_Flush
     log_option_volumes("written", file, offset, buffer, size);
-    return option && (*option & 1) ? flush_handle(f) : 0;   // WriteOptionFlag_Flush
+    if (file->save) save_change_end();
+    return r;
 }
 
 static uint32_t file_size(int64_t *out, uint64_t h) {
@@ -982,8 +1041,10 @@ static uint32_t set_file_size(uint64_t h, int64_t size) {
     File *file = size < 0 ? NULL : file_of(h, &f, &mode);
     if (!file) return FS_R_INVALID_ARGUMENT;
     if (!(mode & FS_OPEN_WRITE)) return FS_R_OPEN_MODE;
-    if (file->save) save_touched();
-    return fs_result(plat_file_set_size(f, (uint64_t)size));
+    if (file->save) save_change_begin();
+    uint32_t r = fs_result(plat_file_set_size(f, (uint64_t)size));
+    if (file->save) save_change_end();
+    return r;
 }
 
 static uint32_t flush_file(uint64_t h) {
@@ -1011,10 +1072,7 @@ static void close_file(uint64_t h) {
     }
 }
 
-static uint32_t create_file(const char *path, int64_t size) {
-    char p[PATH_CAP];
-    uint32_t r = save_change_path(path, p, sizeof p);
-    if (r) return r;
+static uint32_t create_file_at(const char *p, int64_t size) {
     if (size < 0) return FS_R_INVALID_ARGUMENT;
     int err = 0;
     PlatFile *f = plat_fs_create(p, &err);
@@ -1024,23 +1082,33 @@ static uint32_t create_file(const char *path, int64_t size) {
     return fs_result(err);
 }
 
+static uint32_t create_file(const char *path, int64_t size) {
+    char p[PATH_CAP];
+    int save;
+    uint32_t r = save_change_path(path, p, sizeof p, &save);
+    return r ? r : save_path_end(create_file_at(p, size), save);
+}
+
 static uint32_t delete_file(const char *path) {
     char p[PATH_CAP];
-    uint32_t r = save_change_path(path, p, sizeof p);
+    int save;
+    uint32_t r = save_change_path(path, p, sizeof p, &save);
     if (r) return r;
-    if (plat_fs_kind(p) == PLAT_FS_DIR) return FS_R_INVALID_ARGUMENT;   // DeleteFile on a directory
-    return fs_result(plat_fs_unlink(p));
+    if (plat_fs_kind(p) == PLAT_FS_DIR) return save_path_end(FS_R_INVALID_ARGUMENT, save);   // DeleteFile on a directory
+    return save_path_end(fs_result(plat_fs_unlink(p)), save);
 }
 
 static uint32_t rename_file(const char *from, const char *to) {
     char a[PATH_CAP], b[PATH_CAP];
-    uint32_t r = save_change_path(from, a, sizeof a);
-    if (!r) r = host_path(to, b, sizeof b);
+    int save;
+    uint32_t r = save_change_path(from, a, sizeof a, &save);
     if (r) return r;
+    r = host_path(to, b, sizeof b);
+    if (r) return save_path_end(r, save);
     size_t n = strcspn(from, ":");
-    if (strcspn(to, ":") != n || strncmp(from, to, n)) return FS_R_INVALID_PATH;   // across mounts
-    if (exists(b)) return FS_R_ALREADY_EXISTS;
-    return fs_result(plat_fs_rename(a, b, 0));
+    if (strcspn(to, ":") != n || strncmp(from, to, n)) return save_path_end(FS_R_INVALID_PATH, save);   // across mounts
+    if (exists(b)) return save_path_end(FS_R_ALREADY_EXISTS, save);
+    return save_path_end(fs_result(plat_fs_rename(a, b, 0)), save);
 }
 
 static uint32_t entry_type(int *out, const char *path) {
@@ -1061,17 +1129,18 @@ _Static_assert(sizeof(DirectoryEntry) == 0x310, "nn::fs::DirectoryEntry");
 
 static uint32_t create_directory(const char *path) {
     char p[PATH_CAP];
-    uint32_t r = save_change_path(path, p, sizeof p);
-    if (r) return r;
-    return fs_result(plat_fs_mkdir(p));
+    int save;
+    uint32_t r = save_change_path(path, p, sizeof p, &save);
+    return r ? r : save_path_end(fs_result(plat_fs_mkdir(p)), save);
 }
 
 static uint32_t delete_recursive(const char *path) {
     char p[PATH_CAP];
-    uint32_t r = save_change_path(path, p, sizeof p);
+    int save;
+    uint32_t r = save_change_path(path, p, sizeof p, &save);
     if (r) return r;
-    if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
-    return remove_tree(p) ? FS_R_INVALID_ARGUMENT : 0;
+    if (plat_fs_kind(p) != PLAT_FS_DIR) return save_path_end(FS_R_PATH_NOT_FOUND, save);
+    return save_path_end(remove_tree(p) ? FS_R_INVALID_ARGUMENT : 0, save);
 }
 
 static uint32_t open_directory(uint64_t *out, const char *path, int mode) {
@@ -1753,6 +1822,95 @@ static void probe_second_instance(const uint64_t *uid, const char *dir) {
     CHECK(tx_commit() == 0, "Commit after the second instance");
 }
 
+// A Commit queued while a change is running starts after it and takes it. The hook holds the change open while the
+// main thread queues the Commit; the Commit must still be waiting when the change goes on.
+static volatile int32_t order_in_change, order_go;
+static void order_hook(void) {
+    plat_xchg32(&order_in_change, 1);
+    while (!plat_cas32(&order_go, 0, 0)) plat_sleep_ms(1);
+}
+
+static void order_writer(void *arg) {
+    uint64_t h = *(uint64_t *)arg;
+    memset(tx_buf, 2, TX_SIZE);
+    need(!write_file(h, 0, tx_buf, TX_SIZE, NULL), "order write");
+}
+
+static void probe_commit_order(void) {
+    const char *path = "save:/order.sav";
+    uint64_t h = 0;
+    CHECK(tx_write(path, 1) && tx_commit() == 0 && RES(S_OPEN_FILE, U(&h), U(path), FS_OPEN_WRITE) == 0, "order: start");
+    tx_change_hook = order_hook;
+    PlatThread *t = plat_thread_new(order_writer, &h, "order writer");
+    need(t != NULL, "order thread");
+    while (!plat_cas32(&order_in_change, 0, 0)) plat_sleep_ms(1);
+    tx_change_hook = NULL;
+    CHECK(RES(S_COMMIT, U("save")) == 0, "order: Commit");
+    plat_sleep_ms(50);   // long enough for a Commit that does not wait to finish; one that waits never gets here done
+    int waited = plat_cas32(&commit_pending, 0, 0);
+    plat_xchg32(&order_go, 1);
+    plat_thread_join(t);
+    save_wait_commit();
+    CHECK(waited, "order: a Commit ran during a change to the working copy");
+    CALL(S_CLOSE_FILE, h);
+    CHECK(tx_commit() == 0 && tx_read_committed("order.sav") == 2, "order: the change is not in the Commit");
+    CHECK(RES(S_DELETE_FILE, U(path)) == 0 && tx_commit() == 0, "order: cleanup");
+}
+
+// Writers against Commits on other threads: a Commit copies a tree no write is changing, and no change is lost to the
+// dirty flag. Each write fills the whole file in one call, so a copy taken during one shows two bytes in the file.
+#define RACE_SIZE (4u << 20)
+#define RACE_COMMITS 40
+static volatile int32_t race_stop, race_last;
+static void race_writer(void *arg) {
+    uint64_t h = *(uint64_t *)arg;
+    uint8_t *buf = malloc(RACE_SIZE);
+    need(buf != NULL, "race buffer");
+    for (int g = 1; !plat_cas32(&race_stop, 0, 0); g = g % 250 + 1) {
+        memset(buf, g, RACE_SIZE);
+        need(!write_file(h, 0, buf, RACE_SIZE, NULL), "race write");
+        plat_xchg32(&race_last, g);
+    }
+    free(buf);
+}
+
+static void probe_commit_race(void) {
+    const char *path = "save:/race.sav";
+    uint64_t h = 0;
+    CHECK(RES(S_CREATE_FILE, U(path), RACE_SIZE) == 0 && RES(S_OPEN_FILE, U(&h), U(path), FS_OPEN_WRITE) == 0, "race: open");
+    PlatThread *t = plat_thread_new(race_writer, &h, "race writer");
+    need(t != NULL, "race thread");
+    uint8_t *got = malloc(RACE_SIZE);
+    need(got != NULL, "race buffer");
+    char *committed = join(save_root, "race.sav");
+    int torn = 0;
+    for (int i = 0; i < RACE_COMMITS; i++) {
+        CHECK(tx_commit() == 0, "race: Commit %d", i);
+        PlatFile *f = plat_file_open(committed);
+        if (f && independent_read(f, got, RACE_SIZE, 0) == RACE_SIZE) {
+            for (uint32_t k = 1; k < RACE_SIZE; k++)
+                if (got[k] != got[0]) {
+                    torn++;
+                    break;
+                }
+        }
+        if (f) plat_file_close(f);
+    }
+    plat_xchg32(&race_stop, 1);
+    plat_thread_join(t);
+    CALL(S_CLOSE_FILE, h);
+    CHECK(tx_commit() == 0, "race: last Commit");
+    PlatFile *f = plat_file_open(committed);
+    CHECK(f && independent_read(f, got, RACE_SIZE, 0) == RACE_SIZE && got[0] == plat_cas32(&race_last, 0, 0) &&
+          got[RACE_SIZE - 1] == got[0], "race: the last write is not in the last Commit");
+    if (f) plat_file_close(f);
+    CHECK(!torn, "race: %d of %d Commits copied a file during a write", torn, RACE_COMMITS);
+    printf("commit race: %d Commits against a writer thread, %d copied a file during a write\n", RACE_COMMITS, torn);
+    free(committed);
+    free(got);
+    CHECK(RES(S_DELETE_FILE, U(path)) == 0 && tx_commit() == 0, "race: cleanup");
+}
+
 static void probe_storage(void) {
     char tmp[PLAT_PATH_MAX * 3], dir[PLAT_PATH_MAX * 3 + 64];
     need(plat_temp_dir(tmp, sizeof tmp), "temporary directory");
@@ -1869,6 +2027,8 @@ static void probe_storage(void) {
     CHECK(tx_commit() == 0 && !fs_save_busy(), "Commit after the changes");
     probe_save_tx(uid);
     probe_second_instance(uid, dir);
+    probe_commit_order();
+    probe_commit_race();
 
     // temporary and cache storage
     CHECK(RES(S_MOUNT_TEMP, U("temp")) == 0 && RES(S_CREATE_FILE, U("temp:/t.bin"), 4) == 0 && !fs_save_busy(),
