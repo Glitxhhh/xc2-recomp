@@ -1,6 +1,6 @@
 // xc2.exe --probe-movie: the host movie::Decoder (ov_movie.c) on one XC2 movie from the RomFS.
-// A small Matroska/WebM demuxer reads the VP9 frames of Event/Movie/<name>.webm (the smallest one, or the first whose
-// path contains XC2_PROBE_MOVIE). The probe then drives the decoder through the same HOST_OVERRIDE entries the game
+// A small Matroska/WebM demuxer reads the VP9 frames of stream/movie/<name>.webm (3.0.1; older dumps keep them in
+// Event/Movie), the smallest one, or the first whose path contains XC2_PROBE_MOVIE. The probe then drives the decoder through the same HOST_OVERRIDE entries the game
 // calls, with a Cpu of its own; the guest functions the decoder calls (nn::os::SignalEvent, movie::Buffer,
 // movie::MediaData) are host stand-ins registered as host functions, so rt_call reaches them as it reaches the SDK's.
 //   1. unpaced: every frame in, every frame out: frame count, size, output format, PTS order, events, decode cost;
@@ -284,16 +284,16 @@ int probe_movie(void) {
         uint64_t size;
         const char *p = romfs_entry(i, NULL, &size);
         size_t n = p ? strlen(p) : 0;
-        if (!p || strncmp(p, "Event/Movie/", 12) || n < 5 || strcmp(p + n - 5, ".webm")) continue;
+        if (!p || (strncmp(p, "stream/movie/", 13) && strncmp(p, "Event/Movie/", 12)) || n < 5 || strcmp(p + n - 5, ".webm")) continue;
         movies++;
         if (want ? strstr(p, want) && !name : size < best) { name = p; best = size; }
     }
     if (!name) {
-        printf("probe-movie: skipped: no Event/Movie/*.webm%s%s in the RomFS index (%d movies)\n",
+        printf("probe-movie: skipped: no stream/movie/*.webm or Event/Movie/*.webm%s%s in the RomFS index (%d movies)\n",
                want ? " matching " : "", want ? want : "", movies);
         return 0;
     }
-    printf("probe-movie: %d movies in Event/Movie; decoding %s (%.1f MiB)\n", movies, name, best / 1048576.0);
+    printf("probe-movie: %d movies; decoding %s (%.1f MiB)\n", movies, name, best / 1048576.0);
 
     CHECK(romfs_mount("probe") == 0, "RomFS mount");
     char path[512];
@@ -353,8 +353,8 @@ int probe_movie(void) {
     C->x[2] = (uint64_t)t.h;
     s_set_int32(C);
 
-    call(MOVIE_CTOR, 5, obj, (uint64_t)MOVIE_TYPE_VP9, (uint64_t)MOVIE_FORMAT_NV12, (uint64_t)MOVIE_MODE_BUFFER,
-         (uint64_t)0);
+    // The constructor 3.0.1 imports, with the format enum it passes (main's callers, ov_movie.c ov_ctor_buffer).
+    call(MOVIE_CTOR_BUFFER, 3, obj, (uint64_t)MOVIE_TYPE_VP9, (uint64_t)MOVIE_FORMAT_NV12_BUFFER);
     CHECK(obj_mem[0] == g.vptr && obj_mem[1], "constructor: object holds %#llx %#llx", (unsigned long long)obj_mem[0],
           (unsigned long long)obj_mem[1]);
     CHECK((uint32_t)call(MOVIE_REGISTER_EVENTS, 2, obj, U(events)) == 0, "RegisterClientEvents");
