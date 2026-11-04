@@ -2,6 +2,7 @@
 // Include the implementation to exercise its private wire parser and frame transitions.
 #include <assert.h>
 #include "../runtime/audren.c"
+#include "../runtime/audio_voice_walk.h"
 
 unsigned rt_trace;
 void rt_log(const char *fmt, ...) { (void)fmt; }
@@ -150,6 +151,44 @@ static void stream_resume(void) {
     dispose(&f);
 }
 
+// End of stream on a buffer that finishes mid-frame: as in Ryujinx DataSourceHelper.Decode and yuzu DecodeFromWaveBuffers,
+// the played count resets and the rest of the frame comes from the next queued buffer. XC2 flags every streamed buffer,
+// so silencing the frame there cut voices (issue #29). The decoder and the clock must stay on one sample path.
+static void end_of_stream_continues(void) {
+    enum { LEN = 300 };
+    static int16_t pcm[2][LEN];
+    for (int i = 0; i < LEN; i++) { pcm[0][i] = (int16_t)(1000 + i); pcm[1][i] = (int16_t)(2000 + i); }
+    Fixture f = fixture(4, 3);
+    AudrenVoiceIn v = voice(0);
+    for (int b = 0; b < 2; b++)
+        v.wave_buffers[b] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)pcm[b], .size = sizeof pcm[b], .end = LEN,
+                                               .end_of_stream = 1};
+    v.wave_buffer_count = 2;
+    put_voice(&f, 0, v);
+    update(&f);
+    ServerVoice *s = &f.r.voices[0];
+    static float out[6][MAX_FRAME];
+    voices_prepare(&f.r);
+    voice_render(&f.r, s, out, 240);
+    for (int k = 0; k < 240; k++) assert(out[0][k] == (1000 + k) / 32768.0f);
+    advance_voice(&f.r, s, .005);
+    assert(s->played == 240 && s->consumed == 0);
+    voices_prepare(&f.r);
+    voice_render(&f.r, s, out, 240);
+    for (int k = 0; k < 60; k++) assert(out[0][k] == (1240 + k) / 32768.0f);
+    for (int k = 60; k < 240; k++) assert(out[0][k] == (2000 + k - 60) / 32768.0f);
+    advance_voice(&f.r, s, .005);
+    assert(s->consumed == 1 && s->index == 1 && s->offset == 180 && s->played == 180);
+    // The last buffer runs dry: silence after its samples, the clock stops, and played resets on the flagged end.
+    voices_prepare(&f.r);
+    voice_render(&f.r, s, out, 240);
+    for (int k = 0; k < 120; k++) assert(out[0][k] == (2180 + k) / 32768.0f);
+    for (int k = 120; k < 240; k++) assert(out[0][k] == 0);
+    advance_voice(&f.r, s, .005);
+    assert(s->consumed == 2 && s->played == 0 && s->state == SV_STARTED);
+    dispose(&f);
+}
+
 static void full_voice_table(void) {
     Fixture f = fixture(96, 3);
     for (unsigned i = 0; i < 96; i++) {
@@ -191,11 +230,12 @@ int main(void) {
     inactive_entries(3);
     inactive_entries(15);
     stream_resume();
+    end_of_stream_continues();
     full_voice_table();
     reply_bounds(3);
     reply_bounds(5);
     reply_bounds(15);
-    puts("audren: inactive entries, REV3/REV15, stream resume, pause and 96 voices passed");
+    puts("audren: inactive entries, REV3/REV15, stream resume, pause, end of stream and 96 voices passed");
     puts("audren: exact-size REV3/REV5/REV15 replies preserve the trailing guard");
     return 0;
 }

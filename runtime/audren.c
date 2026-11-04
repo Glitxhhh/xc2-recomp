@@ -126,10 +126,7 @@ static void skip_empty(AudioRenderer *r, ServerVoice *v) {
         v->loops_done = 0;
         v->index = (v->index + 1) & 3;
         r->empty_played++;
-        if (b->end_of_stream) {
-            v->played = 0;
-            break;
-        }
+        if (b->end_of_stream) v->played = 0;
     }
 }
 
@@ -347,10 +344,9 @@ static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) 
         v->offset = 0;
         v->loops_done = 0;
         v->index = (v->index + 1) & 3;
-        if (b->end_of_stream) {
-            v->played = 0;
-            break;
-        }
+        // End of stream only resets the played-sample count (Ryujinx VoiceState.MarkEndOfBufferWaveBufferProcessing): XC2
+        // sets the flag on every streamed buffer, so the samples left in this frame come from the next queued buffer.
+        if (b->end_of_stream) v->played = 0;
         skip_empty(r, v);
     }
 }

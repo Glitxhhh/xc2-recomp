@@ -19,6 +19,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix='xc2-audren-check-') as work:
         exe = Path(work) / ('audren_check.exe' if os.name == 'nt' else 'audren_check')
         flags = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if args.sanitize else []
+        if os.name == 'nt':
+            # GNU ld and lld for PE keep unreferenced functions that --gc-sections drops on ELF; those call runtime parts the test leaves out.
+            flags += ['-fuse-ld=lld', '-Wl,-Xlink=-force:unresolved']
         for opt in ('-O0', '-O2'):
             subprocess.run([args.cc, '-std=gnu11', opt, '-g', '-ffunction-sections', '-fdata-sections',
                             *flags, str(ROOT / 'tests' / 'audren_check.c'), '-Wl,--gc-sections', '-lm',
