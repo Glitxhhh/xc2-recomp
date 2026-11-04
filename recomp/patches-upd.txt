@@ -83,7 +83,7 @@ site xc360 main 6ab168 1e2a0800 @page:x8 bd404900
 site xc360 main 6a3710 a9417bfd @page:x8 bd405100 a9417bfd
 
 # Written by hand, not by tools/fps_sites_xc2.py: keep these lines when the xc360 set above is regenerated.
-# Cloud Sea top (issue 5; NOTES.md "Cloud Sea"), off by default. main+0x70fd18 fills the scene constants the Cloud Sea
+# Cloud Sea top (issue 5; NOTES.md "Cloud Sea"), on by default. main+0x70fd18 fills the scene constants the Cloud Sea
 # shaders read: c3[8].w is the cloud top (the view object's +0x194, from the area's environment data), c3[10].y the
 # camera height (+0x154). The fragment shader draws the inside-the-clouds fog when the top is above the camera. Where
 # the floor is just under the top (Goldmouth's dock: top -8, floor -8.5), the low camera sits about 0.14 m under it and
@@ -93,5 +93,5 @@ site xc360 main 6a3710 a9417bfd @page:x8 bd405100 a9417bfd
 # loaded again right after the site, and no flags are used.
 #   ldr s10, [x22, #0x194]; ldr s0, [x22, #0x154]; fsub s1, s10, s0; fmov s2, #1.0; fmov s3, #0.125; fsub s3, s0, s3
 #   fcmgt s2, s2, s1; fcmgt s1, s1, #0.0; and v1.8b, v1.8b, v2.8b; bit v10.8b, v3.8b, v1.8b
-set cloudtop XC2_CLOUD_TOP_FIX 0
+set cloudtop XC2_CLOUD_TOP_FIX 1
 site cloudtop main 710250 bd4196ca bd4196ca bd4156c0 1e203941 1e2e1002 1e281003 1e233803 7ea1e442 5ea0c821 0e221c21 2ea11c6a
