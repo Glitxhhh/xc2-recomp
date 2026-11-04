@@ -93,6 +93,12 @@ game tick).
   modules): set `wind` (`XC2_WIND_GUARD`) sends main+0x1ab7c0, which can remove a wind object twice and stop the game,
   to `xc2_fixes.c wind_remove`; set `hipcwake` (`XC2_HIPC_BROADCAST`) makes the HIPC session pool broadcast instead of
   signal one waiter (a lost wakeup Aegis saw as a boot hang). Neither crash nor hang has been seen in this port yet.
+- Per-frame steps the 60 fps step does not cover, 3.0.1 (measured with probes at the sites, 2026-11-04):
+  - The stick camera turned 0.0524 rad a frame at any rate (3.14 rad/s at 60 fps against 1.57 at 30); set `camrate`
+    (`XC2_CAM_RATE`) scales its yaw and pitch steps by the frame time: 1.571, 1.591 and 1.577 rad/s at 30, 60, 120.
+  - Already right, so not patched: the frame time the per-frame managers get (main+0x32a978 hands them +0x78 of the
+    step object, the measured step), and the time of day (its step is 1.6 / fps, built from the xc360 frame time).
+    Aegis scales both (its sites +0x35a8f4, +0x35ac28, +0x27e994) because its runtime has no measured step.
 - XC2 builds its window with present interval 1 and never changes it (`XC2_TRACE=gfx`: `nvnWindowSetPresentInterval` is
   not called through the new-game script). Its 30 fps cap is the game's own vsync waits, so 60 fps needs a patch at that
   site, not at the NVN interval.
