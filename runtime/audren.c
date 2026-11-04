@@ -91,10 +91,9 @@ static void voice_reset(ServerVoice *v) {
 static void update_voice(AudioRenderer *r, const AudrenVoiceIn *in) {
     need(in->id < (uint32_t)r->param.voice_count, "voice id out of range");
     ServerVoice *v = &r->voices[in->id];
-    if (in->is_new || !in->in_use) voice_reset(v);
+    if (in->is_new) voice_reset(v);
     v->in = *in;
     v->use_float_biquads = 0;
-    if (!in->in_use) return;
     need(in->wave_buffer_index < 4, "wave buffer index");
     // The play state as the DSP keeps it (Ryujinx VoiceInfo.UpdatePlayState): Stop on a voice that is not stopped
     // becomes Stopping, which the next render frame turns into Stopped after giving back every queued buffer.
@@ -235,7 +234,11 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
         need(chans[i].id < (uint32_t)vc * 6, "channel resource id");
         r->channels[chans[i].id] = chans[i];
     }
+    // Only in_use is defined in inactive wire entries; their stale IDs can name a live voice. Rebuild membership
+    // from active entries before resetting absent voices, so an unused slot cannot erase another slot's stream.
+    for (int i = 0; i < vc; i++) r->voices[i].in.in_use = 0;
     for (int i = 0; i < vc; i++) {
+        if (!voices[i * voice_stride + offsetof(AudrenVoiceIn, in_use)]) continue;
         AudrenVoiceIn v;
         AudrenVoiceInV2 v2;
         if (float_voices) {
@@ -257,6 +260,8 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
         server->use_float_biquads = (uint8_t)float_voices;
         if (float_voices) memcpy(server->float_biquads, v2.biquads, sizeof v2.biquads);
     }
+    for (int i = 0; i < vc; i++)
+        if (!r->voices[i].in.in_use) voice_reset(&r->voices[i]);
     for (int i = 0; i < ec; i++) r->effects[i] = effects[i];
     audio_mixer_update_effects(r);
     audio_mixer_update_routing(r, splitters, h.splitters, mixes, h.mixes, mc);
