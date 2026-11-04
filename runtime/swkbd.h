@@ -9,7 +9,7 @@
 // The request, front-end independent.
 typedef struct {
     uint16_t prompt[0x101];              // header, else guide, else sub text (UTF-16, NUL-terminated; may be empty)
-    uint16_t initial[KB_LIMIT + 1];      // starting text (the game's, else the catalog's default name)
+    uint16_t initial[KB_LIMIT + 1];      // starting text from the game, or empty
     int game_initial;                    // the starting text is the game's
     int max_len, min_len, password, numeric;
     uint32_t disabled;
