@@ -127,9 +127,9 @@ static void xc2_delta_store(void) {
     memcpy((void *)(uintptr_t)(obj + 0x78), d, sizeof d);
 }
 
-// The stick camera's turn per frame (recomp/fixes-upd.txt camrate), on the patch page: +0x60 the frame step times 30,
+// The stick camera's turn per frame (recomp/fixes-upd.txt camrate), on the patch page: +0x100 the frame step times 30,
 // the factor of its fixed per-frame yaw and pitch steps (1 at 30 fps, as on the console; at most 2, as the step stops
-// at 1/15 s); +0x64 the largest step it applies to (0.3 rad; a camera being placed jumps further). The time of day
+// at 1/15 s); +0x104 the largest step it applies to (0.3 rad; a camera being placed jumps further). The time of day
 // needs no factor: its step is built from the frame time the set xc360 supplies (1.6 / fps game minutes a frame).
 static void step_factor(uint8_t *page, unsigned off, float v) {
     uint32_t b;
@@ -141,8 +141,8 @@ static void cam_rate_store(double step) {
     uint8_t *page = rt_patch_page();
     if (!page) return;
     float k = (float)(step * 30);
-    step_factor(page, 0x60, k < 0 ? 0 : k > 2 ? 2 : k);
-    step_factor(page, 0x64, 0.3f);
+    step_factor(page, 0x100, k < 0 ? 0 : k > 2 ? 2 : k);
+    step_factor(page, 0x104, 0.3f);
 }
 
 int frame_rate_paced(void) { return xc2_words != NULL; }
