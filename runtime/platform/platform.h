@@ -310,6 +310,12 @@ PlatFile *plat_fs_create(const char *path, int *err);     // a new file for writ
 int64_t plat_file_pwrite(PlatFile *f, const void *buf, uint32_t n, uint64_t off);   // bytes written, -1 on error
 int plat_file_set_size(PlatFile *f, uint64_t size);       // PLAT_FS_*
 int plat_file_fsync(PlatFile *f);                         // the file's data to the disk; 1 on success
+// An exclusive advisory lock on the file at path, created when missing. The system drops it when the process ends,
+// however it ends, and it is not inherited by child processes. NULL on failure: *err (may be NULL) is PLAT_FS_BUSY when
+// a holder has it, in this process or another, else another PLAT_FS_* (a file system without locks included).
+typedef struct PlatFileLock PlatFileLock;
+PlatFileLock *plat_file_lock(const char *path, int *err);
+void plat_file_unlock(PlatFileLock *l);
 int plat_temp_dir(char *out, size_t cap);                 // the user's temporary directory, no trailing separator
 int plat_exe_path(char *out, size_t cap);                 // path of the running executable; 0 on failure
 uintptr_t plat_exe_base(void);                            // where the executable is loaded

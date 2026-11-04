@@ -4,6 +4,7 @@
 // handles go to the read-only backend (romfs.c); save, temporary and cache storage are host directories under the
 // profile directory (rt_config()->profile, default build/profile):
 //
+//   <profile>/profile.lock             held by the running game: one process owns a profile (profile_lock_take)
 //   <profile>/save/<uid hi><uid lo>/   committed application save data, created on first use as the system launcher
 //                                      does for titles that declare save data
 //   <profile>/save-tx/                 the save mount's working copy and Commit's staging (section "save
@@ -531,6 +532,27 @@ void fs_save_flush(void) {
 }
 
 // ---- storage roots
+// One process owns a profile. Startup deletes the working copy and staging directories it finds and empties temp, as
+// they can only be a dead run's, which holds only while no other game runs on this profile: its live working copy
+// would go, and its next Commit would fail or commit nothing. So the lock comes before anything in the profile is
+// touched. The system drops the lock when the holder ends however it ends, so a crash never leaves it stuck.
+#define PROFILE_LOCK_WAIT_MS 2000   // a game that was just closed may still be finishing its last Commit
+static PlatFileLock *profile_lock;
+
+static void profile_lock_take(void) {
+    char *p = join(profile, "profile.lock");
+    int err = PLAT_FS_OK;
+    uint64_t t0 = plat_now_ms();
+    while (!(profile_lock = plat_file_lock(p, &err)) && err == PLAT_FS_BUSY && plat_now_ms() - t0 < PROFILE_LOCK_WAIT_MS)
+        plat_sleep_ms(50);
+    if (!profile_lock && err == PLAT_FS_BUSY)
+        rt_fatal("fs: another running copy of the game is using the profile %s. Nothing was changed; close the other "
+                 "copy and start again", profile);
+    // A file system without locks must not stop the game from starting: only a second copy would be at risk.
+    if (!profile_lock) rt_log("fs: cannot lock %s; nothing stops a second copy from using this profile", p);
+    free(p);
+}
+
 static void storage_init(void *param) {
     (void)param;
     if (!*profile)
@@ -538,6 +560,7 @@ static void storage_init(void *param) {
     uint64_t uid[2];
     char p[PATH_CAP];
     make_dirs(profile);
+    profile_lock_take();
     account_uid(uid);
     snprintf(p, sizeof p, "%s/save", profile);
     make_dirs(p);
@@ -1692,6 +1715,44 @@ static void probe_save_tx(const uint64_t *uid) {
            olds, news, mixed, backups);
 }
 
+// The second instance, in a child process (plat_run_self): it must stop at the profile lock.
+#define PROBE_SECOND_ENV "XC2_PROBE_FS_SECOND"
+static void probe_second_child(void) {
+    char dir[PLAT_PATH_MAX * 3 + 64];
+    if (!plat_getenv(PROBE_SECOND_ENV, dir, sizeof dir)) return;
+    fs_host_set_profile(dir);
+    ready();
+    printf("second instance: storage_init went through the profile lock\n");
+    plat_exit(0);
+}
+
+// A game is running on this profile with uncommitted changes when a second one starts: it stops with the named fatal
+// and the first one's working copy, staging and temporary files stay as they were.
+static void probe_second_instance(const uint64_t *uid, const char *dir) {
+    (void)uid;
+    static char out[65536];
+    char *lockp = join(dir, "profile.lock");
+    int err = 0;
+    PlatFileLock *again = plat_file_lock(lockp, &err);
+    CHECK(!again && err == PLAT_FS_BUSY, "a second lock on the profile in this process: error %d", err);
+    if (again) plat_file_unlock(again);
+    free(lockp);
+
+    CHECK(tx_write("save:/second.sav", 7), "write before the second instance");
+    char temp[PLAT_PATH_MAX * 3 + 64];
+    snprintf(temp, sizeof temp, "%s/temp/second.tmp", dir);
+    PlatFile *t = plat_fs_create(temp, NULL);
+    CHECK(t != NULL, "temporary file before the second instance");
+    if (t) plat_file_close(t);
+    int code = plat_run_self(PROBE_SECOND_ENV, dir, out, sizeof out, 30000);
+    CHECK(code == 70 && strstr(out, "FATAL: fs: another running copy of the game"),
+          "second instance: exit code %d, output: %s", code, out);
+    CHECK(tx_read("save:/second.sav") == 7 && exists(temp), "the second instance touched the first one's files");
+    printf("second instance: refused with exit code %d; the first one's files are untouched\n", code);
+    CHECK(RES(S_DELETE_FILE, U("save:/second.sav")) == 0 && plat_fs_unlink(temp) == 0, "cleanup");
+    CHECK(tx_commit() == 0, "Commit after the second instance");
+}
+
 static void probe_storage(void) {
     char tmp[PLAT_PATH_MAX * 3], dir[PLAT_PATH_MAX * 3 + 64];
     need(plat_temp_dir(tmp, sizeof tmp), "temporary directory");
@@ -1807,6 +1868,7 @@ static void probe_storage(void) {
           RES(S_ENTRY_TYPE, U(&type), U("save:/dir")) == FS_R_PATH_NOT_FOUND, "DeleteDirectoryRecursively");
     CHECK(tx_commit() == 0 && !fs_save_busy(), "Commit after the changes");
     probe_save_tx(uid);
+    probe_second_instance(uid, dir);
 
     // temporary and cache storage
     CHECK(RES(S_MOUNT_TEMP, U("temp")) == 0 && RES(S_CREATE_FILE, U("temp:/t.bin"), 4) == 0 && !fs_save_busy(),
@@ -1826,6 +1888,7 @@ static void probe_storage(void) {
     CHECK(RES(S_DELETE_CACHE, 3) == 0, "DeleteCacheStorage");
     CALL(S_UNMOUNT, U("save"));
 
+    plat_file_unlock(profile_lock);   // Windows cannot delete a file open without sharing
     int removed = !remove_tree(dir) && !exists(dir);
     CHECK(removed, "the temporary profile was not deleted");
     printf("storage: save create/write/commit/reopen, directories, rename/delete, temporary and cache storage in a "
@@ -1833,6 +1896,7 @@ static void probe_storage(void) {
 }
 
 int probe_fs(void) {
+    probe_second_child();
     fs_init();
     for (int i = 0; i < NPROBE; i++) {
         GuestFn fn = hostfn_override(probe_symbols[i]);
