@@ -127,6 +127,24 @@ static void xc2_delta_store(void) {
     memcpy((void *)(uintptr_t)(obj + 0x78), d, sizeof d);
 }
 
+// The stick camera's turn per frame (recomp/fixes-upd.txt camrate), on the patch page: +0x100 the frame step times 30,
+// the factor of its fixed per-frame yaw and pitch steps (1 at 30 fps, as on the console; at most 2, as the step stops
+// at 1/15 s); +0x104 the largest step it applies to (0.3 rad; a camera being placed jumps further). The time of day
+// needs no factor: its step is built from the frame time the set xc360 supplies (1.6 / fps game minutes a frame).
+static void step_factor(uint8_t *page, unsigned off, float v) {
+    uint32_t b;
+    memcpy(&b, &v, 4);
+    __atomic_store_n((uint32_t *)(page + off), b, __ATOMIC_RELEASE);
+}
+
+static void cam_rate_store(double step) {
+    uint8_t *page = rt_patch_page();
+    if (!page) return;
+    float k = (float)(step * 30);
+    step_factor(page, 0x100, k < 0 ? 0 : k > 2 ? 2 : k);
+    step_factor(page, 0x104, 0.3f);
+}
+
 int frame_rate_paced(void) { return xc2_words != NULL; }
 
 // Cutscenes and pre-rendered movies run at 30 fps, as the console runs them: event scenes advance per frame, so at
@@ -153,6 +171,7 @@ static int xc2_cutscene(void) {
 
 void frame_step_init(void) {
     xc2_rate = rt_patch_set("xc360");
+    cam_rate_store(1.0 / 30);
     if (rt_patch_enabled(xc2_rate)) {
         xc2_words = (_Atomic uint32_t *)((uint8_t *)rt_patch_page() + 0x40);
         xc2_rate_store(60, 60);
@@ -242,6 +261,7 @@ uint64_t frame_step_cap_ns(void) {
         xc2_cut = cut;
         xc2_interval_store(cut ? 2 : 1);
         xc2_delta_store();
+        cam_rate_store(step_now);
         if (cut) hz = 30;
         xc2_wait_store(1.0 / hz);
     }

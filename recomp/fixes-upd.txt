@@ -31,3 +31,14 @@ site wind main 1abcd8 97fffeba @host:fd0
 set hipcwake XC2_HIPC_BROADCAST 1
 site hipcwake sdk 525f4 940ddbb9 9400cf82
 site hipcwake sdk 52684 940ddb95 9400cf5e
+
+# The stick camera (main+0x1d0a70) turns by a fixed step per frame: target yaw = yaw + s8 (main+0x1d132c), target pitch
+# = pitch + s9 (main+0x1d1360); measured 0.0524 rad a frame at 30, 60 and 120 fps, so at 60 fps it turned twice as
+# fast as on the console. Each step is multiplied by patch page +0x100, the frame time times 30 (runtime/frame_rate.c
+# cam_rate_store: 1 at 30 fps); a step over +0x104 (0.3 rad), a camera being placed, stays whole. x16 and v2-v5 are
+# dead at both sites; no flags are written.
+#   adrp x16, page; ldr s3, [x16, #0x100]; ldr s4, [x16, #0x104]; fmul s2, s8, s3; fabs s5, s8; fcmgt s5, s5, s4
+#   bit v2.8b, v8.8b, v5.8b; fadd s0, s2, s0                      (s9 for the pitch)
+set camrate XC2_CAM_RATE 1
+site camrate main 1d132c 1e202900 @page:x16 bd410203 bd410604 1e230902 1e20c105 7ea4e4a5 2ea51d02 1e202840
+site camrate main 1d1360 1e202920 @page:x16 bd410203 bd410604 1e230922 1e20c125 7ea4e4a5 2ea51d22 1e202840
