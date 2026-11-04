@@ -81,3 +81,4 @@ site xc360 main 786208 bd414901 @page:x8 bd405101 f0001168
 site xc360 main 7ba1d4 bd414901 @page:x8 bd405101 f0000fc8
 site xc360 main 6ab168 1e2a0800 @page:x8 bd404900
 site xc360 main 6a3710 a9417bfd @page:x8 bd405100 a9417bfd
+include fixes-upd.txt   # the game fixes, kept by hand

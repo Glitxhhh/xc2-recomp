@@ -1,0 +1,17 @@
+# XC2 3.0.1 game fixes (recomp/patches.py), included by patches-upd.txt. The sites were found in Aegis (aegis-xc2,
+# games/xc2/patches.py A041 and A069, MIT) and checked against the 3.0.1 modules.
+
+# A wind object removed twice: main+0x1ab7c0 (manager, object) drops the object's reference when it is the manager's
+# current one, which can destroy the object and take it out of its list and the broad phase, then takes it out of both
+# again; the game then stops on wind.m_pProxy != nullptr. Its only call, here, goes to runtime/xc2_fixes.c
+# wind_remove, the same function with the game's own checks before the second removal.
+set wind XC2_WIND_GUARD 1
+site wind main 1abcd8 97fffeba @host:fd0
+
+# nn::sf's HIPC session pool (Deallocate sdk+0x525b0, and SetSessionCountImpl) signals one waiter, and only
+# when a session goes back to an empty free list: two sessions returned before the first woken waiter runs wake one
+# waiter, and the second sleeps with a session free (a boot hang, about 1 in 9 boots in Aegis). Broadcast instead:
+# every waiter rechecks the list in the loop of Allocate (sdk+0x5253c). sdk+0x863fc is nn::os::BroadcastConditionVariable.
+set hipcwake XC2_HIPC_BROADCAST 1
+site hipcwake sdk 525f4 940ddbb9 9400cf82
+site hipcwake sdk 52684 940ddb95 9400cf5e

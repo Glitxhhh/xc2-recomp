@@ -1,17 +1,20 @@
 """Code patch table for the generator: guest instructions replaced in the lifted C, switchable at run time.
 
 Lifted code cannot be byte-patched when the game runs, so a patch is applied when the C is generated. A patch file
-(gen.py --patches) has two kinds of lines; `#` starts a comment, fields are separated by whitespace:
+(gen.py --patches) has these kinds of lines; `#` starts a comment, fields are separated by whitespace:
 
   set  <name> <env> <default>               a patch set: a run-time switch <env>=0/1, <default> when it is unset
   site <set> <module> <address> <original> <replacement> [<replacement> ...]
 
   spin <module> <head> <back-edge> [<back-edge> ...]
 
+  include <file>                            the lines of another patch file, a path relative to this one's folder
+
 <address> is a module offset (hex), <original> the instruction word the module has there (checked; a mismatch stops
-the generator), each <replacement> an instruction word (hex) or `@page:x<n>`, which is `adrp x<n>, <patch page>`
-encoded for the site's address. The patch page is the first 4 KiB page after main's image (layout.py leaves the rest
-of the 2 MiB-aligned module slot free); the runtime commits it and owns its contents.
+the generator), each <replacement> an instruction word (hex), `@page:x<n>`, which is `adrp x<n>, <patch page>`
+encoded for the site's address, or `@host:<offset>`, which is `bl <patch page + offset>` (hex offset): a call of the
+host function the runtime registers there (rt_register_host). The patch page is the first 4 KiB page after main's image
+(layout.py leaves the rest of the 2 MiB-aligned module slot free); the runtime commits it and owns its contents.
 
 The replacement words are lifted at the site's address in place of the original instruction, and the generated C reads
 `if (rt_patch_on[<set>]) { replacement } else { original }`: one byte load and a branch per executed site. Replacement
@@ -42,7 +45,7 @@ def adrp(pc, target, rd):
 
 
 class Table:
-    """sets: [(name, env, default)]; sites: {module: {offset: (set index, [word | ('page', reg)], original)}}; page."""
+    """sets: [(name, env, default)]; sites: {module: {offset: (set index, [word | ('page', reg) | ('host', offset)], original)}}; page."""
 
     def __init__(self, sets=(), sites=None, page=0, spins=None):
         self.sets = list(sets)
@@ -55,24 +58,56 @@ class Table:
         return {base + b: base + h for b, h in self.spins.get(name, {}).items()}
 
     def for_module(self, name, base):
-        """{absolute address: (set index, [words])} with @page resolved."""
+        """{absolute address: (set index, [words])} with @page and @host resolved."""
         out = {}
         for off, (k, repl, _) in self.sites.get(name, {}).items():
             a = base + off
-            out[a] = (k, [adrp(a, self.page, w[1]) if isinstance(w, tuple) else w for w in repl])
+            out[a] = (k, [word(a, self.page, w) for w in repl])
         return out
 
 
+def word(pc, page, w):
+    """Instruction word of a replacement: a number, ('page', reg) or ('host', offset)."""
+    if not isinstance(w, tuple):
+        return w
+    if w[0] == 'page':
+        return adrp(pc, page, w[1])
+    return bl(pc, page + w[1])
+
+
+def bl(pc, target):
+    imm = (target - pc) >> 2
+    if not -(1 << 25) <= imm < (1 << 25):
+        raise PatchError(f'{pc:#x}: host function {target:#x} out of BL range')
+    return 0x94000000 | (imm & 0x3FFFFFF)
+
+
 def load(path, mods):
-    """Table from a patch file; mods is layout() output [(name, base, size)]."""
+    """Table from a patch file and the files it includes; mods is layout() output [(name, base, size)]."""
     sets, index, sites, spins = [], {}, {}, {}
     bases = {n: (b, s) for n, b, s in mods}
-    for no, raw in enumerate(Path(path).read_text().splitlines(), 1):
+    _read(Path(path), bases, sets, index, sites, spins, [])
+    base, size = bases['main'][0], bases['main'][1]
+    page = (base + size + PAGE - 1) & ~(PAGE - 1)
+    nxt = min((b for _, b, _ in mods if b > base), default=None)
+    if nxt is not None and page + PAGE > nxt:
+        raise PatchError(f'no room for the patch page after main ({page:#x})')
+    return Table(sets, sites, page, spins)
+
+
+def _read(path, bases, sets, index, sites, spins, stack):
+    """Adds the lines of one patch file (and the files it includes) to the tables."""
+    if path.resolve() in stack:
+        raise PatchError(f'{path}: included from itself')
+    stack.append(path.resolve())
+    for no, raw in enumerate(path.read_text().splitlines(), 1):
         f = raw.split('#', 1)[0].split()
         if not f:
             continue
         where = f'{path}:{no}'
-        if f[0] == 'set' and len(f) == 4:
+        if f[0] == 'include' and len(f) == 2:
+            _read(path.parent / f[1], bases, sets, index, sites, spins, stack)
+        elif f[0] == 'set' and len(f) == 4:
             if f[1] in index:
                 raise PatchError(f'{where}: set {f[1]} defined twice')
             index[f[1]] = len(sets)
@@ -87,6 +122,11 @@ def load(path, mods):
             for w in f[5:]:
                 if w.startswith('@page:x'):
                     repl.append(('page', int(w[7:])))
+                elif w.startswith('@host:'):
+                    h = int(w[6:], 16)
+                    if h & 3 or not 0 <= h < PAGE:
+                        raise PatchError(f'{where}: host offset {w[6:]} not a word inside the patch page')
+                    repl.append(('host', h))
                 else:
                     repl.append(int(w, 16))
             mod = sites.setdefault(f[2], {})
@@ -104,12 +144,7 @@ def load(path, mods):
                 mod[b] = head
         else:
             raise PatchError(f'{where}: cannot parse {raw!r}')
-    base, size = bases['main'][0], bases['main'][1]
-    page = (base + size + PAGE - 1) & ~(PAGE - 1)
-    nxt = min((b for _, b, _ in mods if b > base), default=None)
-    if nxt is not None and page + PAGE > nxt:
-        raise PatchError(f'no room for the patch page after main ({page:#x})')
-    return Table(sets, sites, page, spins)
+    stack.pop()
 
 
 def check(table, mod, name):

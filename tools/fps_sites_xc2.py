@@ -98,6 +98,7 @@ def main():
         print(f'site xc360 main {a:x} {w:08x} {words}')
     print(f'site xc360 main {wait:x} 1e2a0800 @page:x8 {ldr_s(0, 8, PAGE_WAIT):08x}')
     print(f'site xc360 main {getter:x} a9417bfd @page:x8 {ldr_s(0, 8, PAGE_STEP):08x} a9417bfd')
+    print('include fixes-upd.txt   # the game fixes, kept by hand')
     print(f'# {len(sites)} step loads', file=sys.stderr)
 
 
