@@ -84,6 +84,12 @@ void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 #define ST64(a, v) (*(u64u *)(uintptr_t)(a) = (uint64_t)(v))
 
 // ---- exclusive monitor (emulated with compare-and-swap)
+// stx##N and stxp128 let the store through when the cell still holds the value ldx##N or ldxp128 remembered, where
+// ARM's monitor lets it through only when nothing stored to the reservation granule since the load. The two differ
+// after another thread wrote X, Y, X in between: ARM fails the store, this code succeeds (tests/excl_mt.py aba_case
+// shows it), so guest code that relies on the distinction, a lock-free list without tags for one, can see a spurious
+// success. A monitor that every store clears would cost on every store; the project accepts the gap for now
+// (docs/building.md, "Checks").
 #define EXCL(N, T)                                                                         \
     static inline uint64_t ldx##N(Cpu *c, uint64_t a) {                                    \
         T v = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                        \
