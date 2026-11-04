@@ -893,6 +893,25 @@ int plat_file_set_size(PlatFile *f, uint64_t size) {
 
 int plat_file_fsync(PlatFile *f) { return FlushFileBuffers((HANDLE)f) != 0; }
 
+// A handle without sharing is the lock: every other open fails with a sharing violation until the process ends. Only
+// that error means a holder; fs_err also reads ERROR_ACCESS_DENIED (a read-only folder) as busy. The handle is not
+// inheritable (no SECURITY_ATTRIBUTES).
+PlatFileLock *plat_file_lock(const char *path, int *err) {
+    wchar_t w[WPATH];
+    if (!widen(path, w, WPATH)) {
+        if (err) *err = PLAT_FS_ERROR;
+        return NULL;
+    }
+    HANDLE h = CreateFileW(w, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        if (err) *err = GetLastError() == ERROR_SHARING_VIOLATION ? PLAT_FS_BUSY : PLAT_FS_ERROR;
+        return NULL;
+    }
+    return (PlatFileLock *)h;
+}
+
+void plat_file_unlock(PlatFileLock *l) { CloseHandle((HANDLE)l); }
+
 int plat_temp_dir(char *out, size_t cap) {
     wchar_t w[MAX_PATH + 1];
     DWORD n = GetTempPathW(MAX_PATH + 1, w);

@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
@@ -1134,6 +1135,27 @@ int64_t plat_file_pwrite(PlatFile *f, const void *buf, uint32_t n, uint64_t off)
 int plat_file_set_size(PlatFile *f, uint64_t size) { return ftruncate(fd_of(f), (off_t)size) ? fs_err(errno) : 0; }
 
 int plat_file_fsync(PlatFile *f) { return fsync(fd_of(f)) == 0; }
+
+// flock belongs to the open file description, so a second open in this process conflicts as another process's does,
+// and O_CLOEXEC keeps it out of programs the runtime starts.
+PlatFileLock *plat_file_lock(const char *path, int *err) {
+    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        if (err) *err = fs_err(errno);
+        return NULL;
+    }
+    int r;
+    do r = flock(fd, LOCK_EX | LOCK_NB);
+    while (r && errno == EINTR);
+    if (r) {
+        if (err) *err = errno == EWOULDBLOCK ? PLAT_FS_BUSY : PLAT_FS_ERROR;
+        close(fd);
+        return NULL;
+    }
+    return (PlatFileLock *)(intptr_t)(fd + 1);
+}
+
+void plat_file_unlock(PlatFileLock *l) { close((int)(intptr_t)l - 1); }
 
 int plat_temp_dir(char *out, size_t cap) {
     const char *t = getenv("TMPDIR");
