@@ -2,7 +2,7 @@
 
 The vendored script checks the title IDs of the game it was written for (Xenoblade Chronicles X: Definitive Edition).
 tools/vendor stays byte-identical to upstream, so install() builds the module from its source with those IDs and the
-game name swapped for XC2's and registers it as extract_exefs, which every later import then gets (tools/extract.py,
+game name swapped for XC2's, plaintext ExeFS sections accepted, and registers it as extract_exefs, which every later import then gets (tools/extract.py,
 tools/package_select.py). Run as a script, it runs that module's main() with the same arguments
 (tools/extract.py extract_exefs).
 """
@@ -15,6 +15,12 @@ SWAPS = (
     ('0100453019AA8000', '0100E95004038000'),   # base and update program
     ('0100453019AA8800', '0100E95004038800'),   # update meta
     ('Xenoblade Chronicles X: Definitive Edition', 'Xenoblade Chronicles 2'),
+    # Some dumps carry plaintext NCAs (section encryption type 1): the ExeFS is read as stored, still checked against
+    # its hash table. The RomFS goes through hactool, which reads them as they are. Any other type is named.
+    ("require(fs[4] == 3, 'Only AES-CTR ExeFS is supported')",
+     "require(fs[4] in (1, 3), f'Only AES-CTR or plaintext ExeFS is supported, not encryption type {fs[4]}')"),
+    ('return decrypt(ctr_key, modes.CTR(iv), data)[absolute - aligned:]',
+     'return (data if fs[4] == 1 else decrypt(ctr_key, modes.CTR(iv), data))[absolute - aligned:]'),
 )
 
 
