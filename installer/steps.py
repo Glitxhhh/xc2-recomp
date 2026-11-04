@@ -178,6 +178,12 @@ def expected_of(ctx, version):
     return json.loads(ctx.layout.expected(version).read_text(encoding='utf-8'))
 
 
+def known_versions(ctx):
+    """Every version tools/data has expected hashes for (expected-xc2-<version>.json), supported or not."""
+    prefix = 'expected-xc2-'
+    return sorted(p.stem[len(prefix):] for p in ctx.layout.expected(BASE).parent.glob(f'{prefix}*.json'))
+
+
 def expected_update(ctx):
     return expected_of(ctx, game_version(ctx))
 
@@ -407,6 +413,14 @@ class Check(Step):
                     from None
         problems = extract.exefs_problems(work / 'base' / 'exefs', expected_of(ctx, BASE))
         if problems:
+            # A base whose main is a known update's is an update chosen as the base, or a dump with one merged in.
+            known = {v: expected_of(ctx, v) for v in known_versions(ctx) if v != BASE}
+            try:
+                found = extract.identify_update(work / 'base' / 'exefs', known)['version']
+            except (ValueError, KeyError):
+                found = None
+            if found:
+                raise InstallError('check.base_is_updated', found=found, wanted=' / '.join(SUPPORTED))
             raise InstallError('check.base_wrong_version', modules=', '.join(problems))
         try:
             found = extract.identify_update(work / 'update' / 'exefs', versions)['version']
@@ -534,6 +548,7 @@ class Extract(Step):
 
 AOC_BASE = APP_ID + 0x1000
 AOC_DATA = 5   # NCA content type of add-on content (PublicData)
+TORNA_STANDALONE = 0x0100C9F009F7A000   # Torna ~ The Golden Country sold on its own: a game, not XC2's add-on
 
 
 def aoc_index(title_id):
@@ -560,6 +575,8 @@ def dlc_record(f, path, keys):
     for record, _ in records:
         if record['content_type'] == AOC_DATA and aoc_index(record['title_id']) is not None:
             return record['title_id'], record, tickets
+    if any(int(record['title_id'], 16) & ~0xfff == TORNA_STANDALONE for record, _ in records):
+        raise InstallError('check.dlc_is_torna_game', path=str(path))
     raise InstallError('check.dlc_not_game', path=str(path))
 
 
