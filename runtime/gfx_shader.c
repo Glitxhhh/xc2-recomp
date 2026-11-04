@@ -792,6 +792,137 @@ done:
     free(ptr_si), free(si_img), free(mark), free(float_img), free(used), free(int_var);
 }
 
+// The Cloud Sea is a quad in world space many kilometres wide (vertex shaders 4091bdf5b0df81bb and 3e88e05082ee22fc
+// scale it by c3[9].z), so the host clips it hard against the near plane. Its fragment shaders find their screen
+// position by dividing an interpolated clip position, xy / w, and read the scene depth (1280x720, nearest) and the
+// quarter-size cloud buffers there. Interpolated across the clipped quad, that position drifts on AMD (seen on a Radeon
+// iGPU, not on an RTX 5090) by over half a pixel near the bottom of the screen, where the plane is closest: the depth
+// read lands on a neighbour and the composite leaves rows and columns of specks (issue 5). The position is exactly
+// the fragment's, so its x, y and w are rebuilt from gl_FragCoord and the support buffer's viewport_inverse
+// (vk_exec_draw.c support_fill: 2 / width, 2 / height) with the y flip of record_fixed: x = fx * 2/w - 1,
+// y = 1 - fy * 2/h, w = 1. Each component the shader loads through an access chain on that input is replaced; z keeps
+// its load. Assumes the viewport starts at 0, 0, as both passes' do. The shaders are named by the FNV-1a hash of their
+// SPIR-V (the name vk_dump.c gives them) and the input's Location. XC2_CLOUD_FRAGPOS=0 turns it off.
+enum { SPV_OP_CONSTANT = 43, SPV_OP_FUNCTION = 54, SPV_OP_ACCESS_CHAIN = 65, SPV_OP_FSUB = 131, SPV_OP_FMUL = 133,
+       SPV_SC_UNIFORM = 2, SPV_BUILTIN_FRAG_COORD = 15, FRAGPOS_MAX_LOADS = 64 };
+
+static const struct { uint64_t hash; uint32_t loc; } fragpos_shaders[] = {
+    {0x595a926b53b7aa34ull, 2},   // Cloud Sea, quarter size (pass "vs 4091bdf5b0df81bb")
+    {0xfaf0281677134f56ull, 0},   // its composite into the scene (pass "vs 3e88e05082ee22fc")
+};
+
+static void cloud_fragpos(GfxShader *s) {
+    static int off = -1;
+    if (off < 0) {
+        const char *e = cfg_get("XC2_CLOUD_FRAGPOS");
+        off = e && e[0] == '0';
+    }
+    const uint32_t *w = s->spirv;
+    uint64_t n = s->words;
+    if (off || s->stage != GFX_STAGE_FS || n < 5 || w[3] >= (1u << 20)) return;
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint64_t i = 0; i < n * 4; i++) h = (h ^ ((const uint8_t *)w)[i]) * 0x100000001b3ull;
+    int which = -1;
+    for (int i = 0; i < (int)(sizeof fragpos_shaders / sizeof *fragpos_shaders); i++)
+        if (fragpos_shaders[i].hash == h) which = i;
+    if (which < 0) return;
+    uint32_t bound = w[3], want = fragpos_shaders[which].loc;
+    uint32_t *loc = calloc(bound, sizeof *loc), *cval = calloc(bound, sizeof *cval), *chain = calloc(bound, sizeof *chain);
+    uint8_t *binding0 = calloc(bound, 1), *is_cint = calloc(bound, 1);
+    uint32_t *out = NULL;
+    if (!loc || !cval || !chain || !binding0 || !is_cint) goto done;
+    // ids: target input var, FragCoord var, support buffer var, float, int, Input float pointer, Uniform float pointer,
+    // Input vec4 pointer, int 0/1/2 constants, float 1.0
+    uint32_t var = 0, fc = 0, sb = 0, f32 = 0, i32 = 0, p_in_f = 0, p_un_f = 0, p_in_v4 = 0, c[3] = {0}, one = 0;
+    uint64_t at_entry = 0, at_decorate = 0, at_function = 0;
+    int nloads = 0;
+    for (uint64_t i = 5; i < n;) {   // declarations
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) goto done;
+        const uint32_t *a = w + i + 1;
+        if (op == OP_ENTRY_POINT && !at_entry) at_entry = i;
+        else if (op == OP_DECORATE && len >= 4 && a[0] < bound) {
+            if (!at_decorate) at_decorate = i;
+            if (a[1] == DEC_LOCATION) loc[a[0]] = a[2] + 1;
+            else if (a[1] == DEC_BUILTIN && a[2] == SPV_BUILTIN_FRAG_COORD) fc = a[0];
+            else if (a[1] == SPV_DECORATION_BINDING && a[2] == 0) binding0[a[0]] = 1;
+        } else if (op == OP_TYPE_FLOAT && len >= 3 && a[1] == 32) f32 = a[0];
+        else if (op == OP_TYPE_INT && len >= 4 && a[1] == 32 && a[2] == 1) i32 = a[0];
+        else if (op == OP_TYPE_POINTER && len >= 4) {
+            if (a[1] == SC_INPUT && a[2] == f32 && f32) p_in_f = a[0];
+            if (a[1] == SPV_SC_UNIFORM && a[2] == f32 && f32) p_un_f = a[0];
+        } else if (op == SPV_OP_CONSTANT && len >= 4 && a[1] < bound) {
+            if (a[0] == i32 && i32 && a[2] < 3) c[a[2]] = a[1], is_cint[a[1]] = 1, cval[a[1]] = a[2];
+            else if (a[0] == i32 && i32 && a[2] == 3) is_cint[a[1]] = 1, cval[a[1]] = 3;
+            else if (a[0] == f32 && f32 && a[2] == 0x3f800000u) one = a[1];
+        } else if (op == OP_VARIABLE && len >= 4 && a[1] < bound) {
+            if (a[2] == SC_INPUT && loc[a[1]] == want + 1) var = a[1], p_in_v4 = a[0];
+            if (a[2] == SPV_SC_UNIFORM && binding0[a[1]]) sb = a[1];
+        } else if (op == SPV_OP_FUNCTION && !at_function) at_function = i;
+        else if (op == SPV_OP_ACCESS_CHAIN && len == 5 && var && a[2] == var && a[1] < bound && a[3] < bound && is_cint[a[3]])
+            chain[a[1]] = cval[a[3]] + 1;
+        else if (op == SPV_OP_LOAD && len >= 4 && a[2] < bound && chain[a[2]] && chain[a[2]] != 3)
+            nloads++;
+        i += len;
+    }
+    if (!var || !sb || !f32 || !i32 || !p_in_f || !at_entry || !at_decorate || !at_function || !nloads ||
+        nloads > FRAGPOS_MAX_LOADS)
+        goto done;
+    out = malloc((n + 64 + 32 * (uint64_t)nloads) * sizeof *out);   // a load of 4 words becomes at most 29
+    if (!out) goto done;
+    int new_fc = !fc;
+    if (new_fc) fc = bound++;
+    uint32_t ids_un_f = p_un_f ? 0 : (p_un_f = bound++), ids_one = one ? 0 : (one = bound++);
+    uint32_t newc[3] = {0};
+    for (int k = 0; k < 3; k++)
+        if (!c[k]) newc[k] = c[k] = bound++;
+    uint64_t o = 0;
+    memcpy(out, w, 5 * sizeof *out), o = 5;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (i == at_decorate && new_fc)
+            out[o++] = 4u << 16 | OP_DECORATE, out[o++] = fc, out[o++] = DEC_BUILTIN, out[o++] = SPV_BUILTIN_FRAG_COORD;
+        if (i == at_function) {   // declarations the rewrite needs, after every type it refers to
+            if (ids_un_f) out[o++] = 4u << 16 | OP_TYPE_POINTER, out[o++] = p_un_f, out[o++] = SPV_SC_UNIFORM, out[o++] = f32;
+            for (int k = 0; k < 3; k++)
+                if (newc[k]) out[o++] = 4u << 16 | SPV_OP_CONSTANT, out[o++] = i32, out[o++] = newc[k], out[o++] = (uint32_t)k;
+            if (ids_one) out[o++] = 4u << 16 | SPV_OP_CONSTANT, out[o++] = f32, out[o++] = one, out[o++] = 0x3f800000u;
+            if (new_fc) out[o++] = 4u << 16 | OP_VARIABLE, out[o++] = p_in_v4, out[o++] = fc, out[o++] = SC_INPUT;
+        }
+        if (op == OP_ENTRY_POINT && i == at_entry && new_fc) {
+            memcpy(out + o, w + i, len * sizeof *out);
+            out[o] = (len + 1) << 16 | OP_ENTRY_POINT;
+            o += len, out[o++] = fc;
+        } else if (op == SPV_OP_LOAD && len >= 4 && a[2] < bound && chain[a[2]] && chain[a[2]] != 3) {
+            uint32_t k = chain[a[2]] - 1, res = a[1];
+            if (k == 3) {
+                out[o++] = 4u << 16 | SPV_OP_COPY_OBJECT, out[o++] = f32, out[o++] = res, out[o++] = one;
+            } else {
+                uint32_t pa = bound++, iv = bound++, pf = bound++, fv = bound++, m = bound++;
+                out[o++] = 6u << 16 | SPV_OP_ACCESS_CHAIN, out[o++] = p_un_f, out[o++] = pa, out[o++] = sb, out[o++] = c[2],
+                out[o++] = c[k];
+                out[o++] = 4u << 16 | SPV_OP_LOAD, out[o++] = f32, out[o++] = iv, out[o++] = pa;
+                out[o++] = 5u << 16 | SPV_OP_ACCESS_CHAIN, out[o++] = p_in_f, out[o++] = pf, out[o++] = fc, out[o++] = c[k];
+                out[o++] = 4u << 16 | SPV_OP_LOAD, out[o++] = f32, out[o++] = fv, out[o++] = pf;
+                out[o++] = 5u << 16 | SPV_OP_FMUL, out[o++] = f32, out[o++] = m, out[o++] = fv, out[o++] = iv;
+                out[o++] = 5u << 16 | SPV_OP_FSUB, out[o++] = f32, out[o++] = res;
+                if (k == 0) out[o++] = m, out[o++] = one;   // x = fx * 2/w - 1
+                else out[o++] = one, out[o++] = m;           // y = 1 - fy * 2/h (the viewport's y flip)
+            }
+        } else {
+            memcpy(out + o, w + i, len * sizeof *out), o += len;
+        }
+        i += len;
+    }
+    out[3] = bound;
+    free(s->spirv);
+    s->spirv = out, s->words = o, out = NULL;
+    rt_log("gfx_shader: Cloud Sea fragment position from gl_FragCoord in fs %016llx (%d loads)", (unsigned long long)h, nloads);
+done:
+    free(out), free(loc), free(cval), free(chain), free(binding0), free(is_cint);
+}
+
 static void reflect(GfxShader *s) {
     static const char *const kinds[GFX_RES_KINDS] = {"cbufs", "sbufs", "textures", "images"};
     const char *js = s->reflection;
@@ -805,6 +936,7 @@ static void reflect(GfxShader *s) {
     }
     reflect_spirv(s);
     integer_samplers(s);
+    cloud_fragpos(s);
 }
 
 // ---- use masks (see the cache key at the top)

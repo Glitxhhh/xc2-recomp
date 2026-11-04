@@ -162,8 +162,11 @@ Grep-level look on 2026-10-22, statuses updated 2026-10-26; "saw" is what the gr
    `colour clear with channel mask` and `stencil clear with mask`. DK3D (1.3) confirms what the replay must do: colour clear = scissor 0 + channel mask, stencil clear = `value & mask` merged under the front write mask; so a draw with `colorWriteMask` / `stencilWriteMask` set to the clear mask is the exact equivalent. **Missing.**
 4. **D24 → D32F.** `vk_formats.c` maps D24S8 to `D32_SFLOAT_S8_UINT`; `vk_exec_draw.c` `record_fixed` passes NVN units
    unscaled. Depth EQUAL passes and decal offsets can z-fight. Look at: per-pass depth-test op histogram, EQUAL passes
-   against D24 targets. **N/A for XC2**: a census of the field and fight saves (2026-10-22) saw depth targets
-   0x34 (DEPTH32F) and 0x32 (DEPTH16) only; biased draws (units -5 and 1, factor -0.5 and -0.2) are on DEPTH32F.
+   against D24 targets. A census of the field and fight saves (2026-10-22) saw depth targets 0x34 (DEPTH32F) and
+   0x32 (DEPTH16) only; biased draws (units -5 and 1, factor -0.5 and -0.2) are on DEPTH32F. Not true everywhere: a
+   Goldmouth Return Port frame (issue 5, 2026-11-04) has its 1280x720 scene depth in 0x35 (DEPTH24_STENCIL8, 69 passes),
+   sampled as a 2D texture in 11 places. Rounding sampled depth to 24 bits (Eden PR 4575's Cloud Sea change) moves it by
+   at most one float step there: in [0.5, 1), where that frame's depth lies (0.76 to 1), D32F and D24 steps are both 2^-24.
 5. **Counters and conditional rendering.** `vk_exec_xfer.c` (as of 2026-10-22): every report writes `{0, time}`;
    SAMPLES_PASSED is always 0; a condition is read on the CPU at record time and an unfinished report reads 0. Grep the
    NVN log for counter types other than TIMESTAMP; any occlusion-driven visibility (flares, culling) is off. **Fixed 2026-10-22**:
