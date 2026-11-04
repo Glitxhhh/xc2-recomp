@@ -295,17 +295,21 @@ static void worker(void *arg) {
         if (p.size > 0) {
             m->st.decode_ns += dt;
             if (dt > m->st.max_ns) m->st.max_ns = dt;
-            if (bad) rt_fatal("movie: VP9 frame layout differs from the configured %dx%d I420", w, h);
-            if (e != VPX_CODEC_OK || !got) {
+            if (bad || e != VPX_CODEC_OK || !got) {
                 m->out_held[slot] = 0;
-                if (e != VPX_CODEC_OK) {
+                if (bad || e != VPX_CODEC_OK) {
                     m->st.errors++;
                     m->last_error = ST_ERROR;
                     m->owed |= 1u << MOVIE_EV_ERROR;
                     if (m->st.errors <= 4) {
-                        const char *d = vpx_codec_error_detail(&m->vpx);
-                        rt_log("movie: VP9 decode error on a %d-byte frame at %lld us: %s", p.size, (long long)p.time,
-                               d ? d : vpx_codec_err_to_string(e));
+                        if (bad)
+                            rt_log("movie: VP9 frame layout differs from the configured %dx%d I420 at %lld us",
+                                   w, h, (long long)p.time);
+                        else {
+                            const char *d = vpx_codec_error_detail(&m->vpx);
+                            rt_log("movie: VP9 decode error on a %d-byte frame at %lld us: %s", p.size, (long long)p.time,
+                                   d ? d : vpx_codec_err_to_string(e));
+                        }
                     }
                 }
             } else {
