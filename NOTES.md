@@ -39,6 +39,12 @@ build\upd\xc2.exe
 
 `build\xlate\xc2_xlate.exe` is XC3's translator build copied over (same sources) with `tools\build_xlate.py --id-only`.
 
+`tools\build_xc2.ps1` builds with the repository's own toolchain in the ignored `toolchain\`, the dev-mode layout of
+`installer/layout.py`: `toolchain\llvm-mingw-<ver>\llvm-mingw-<ver>\` (llvm-mingw, clang 23.1.4 now), `toolchain\deps-mingw`
+with `include\`, `lib\` and `bin\` (SDL3.dll, libopus-0.dll), and MSYS2 UCRT64 ninja. These came from TotK Recomp's
+release 0.2.8 (`llvm\`, `runtime\deps\`, `bin\` of an unpacked release); `-Setup <folder>` still builds from such a
+folder. The build used to borrow `..\..\totk-pc-recomp` and broke when that folder was reset.
+
 Test runs: `XC2_ASSUME_FOCUS=1 XC2_BACKGROUND_WINDOW=1`, `--boot`, `XC2_INPUT_SCRIPT=<file>`, `--seconds N --shot x.png`,
 `XC2_SHOTS=<from>-<to>:<step>`, `XC2_DUMP=<frame>`.
 
@@ -87,5 +93,5 @@ Test runs: `XC2_ASSUME_FOCUS=1 XC2_BACKGROUND_WINDOW=1`, `--boot`, `XC2_INPUT_SC
   site, not at the NVN interval.
 - `docs/` and `tests/` still describe XC3 2.2.1 / XCX behaviour under the renamed names; the installer and release text say
   XC2 3.0.1.
-- The toolchain's deps directory has no `bin/`, so `build_game.py --deps` copies no DLLs; a new build directory takes them
-  from `build\upd`.
+- A release folder's deps directory (`-Setup`) has no `bin/`, so `build_game.py --deps` copies no DLLs there; a new build
+  directory takes them from `build\upd`. `toolchain\deps-mingw\bin` has them.
