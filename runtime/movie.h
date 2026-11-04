@@ -8,17 +8,18 @@
 
 #include "host.h"
 
-// Entries in the order of movie_symbols[]: the imported constructor, then the 19 slots of the vtable for movie::Decoder
-// (subsdk0+0x560700..0x560790, each an ABS64 relocation by name).
+// Entries in the order of movie_symbols[]: the constructor taking mode and priority, the 19 slots of the vtable for
+// movie::Decoder, then the two-argument constructor used by 3.0.1 (buffer mode, with a different output-format enum).
 enum { MOVIE_CTOR, MOVIE_D2, MOVIE_D0, MOVIE_CONFIGURE, MOVIE_REGISTER_EVENTS, MOVIE_GET_OUTPUT_FORMAT, MOVIE_START,
        MOVIE_STOP, MOVIE_RESET, MOVIE_FLUSH, MOVIE_ACQUIRE_INPUT, MOVIE_GET_INPUT, MOVIE_SEND_INPUT, MOVIE_ACQUIRE_OUTPUT,
        MOVIE_GET_OUTPUT, MOVIE_GET_OUTPUT_SIZE, MOVIE_RELEASE_OUTPUT, MOVIE_GET_LAST_ERROR, MOVIE_GET_OUTPUT_MD,
-       MOVIE_GET_OUTPUT_BUFFER_FORMAT, MOVIE_ENTRIES };
+       MOVIE_GET_OUTPUT_BUFFER_FORMAT, MOVIE_CTOR_BUFFER, MOVIE_ENTRIES };
 extern const char *const movie_symbols[MOVIE_ENTRIES];
 
 // Guest addresses of the functions the decoder calls with rt_call: nn::os::SignalEvent, movie::Buffer and
 // movie::MediaData methods, the vtable address the constructor stores (vtable + 0x10), and the original code of every
-// entry for decoders left to the library. Filled from the loaded modules at the first entry call, or by the probe.
+// entry for decoders left to the library (an absent constructor ABI has address 0). Filled from the loaded modules
+// at the first constructor or fallback call, or by the probe.
 typedef struct {
     uint64_t signal_event, buf_set_range, buf_set_data, buf_base, buf_capacity;
     uint64_t md_find_int32, md_find_string, md_set_int32, md_set_rect, md_set_string;
@@ -28,6 +29,7 @@ typedef struct {
 
 enum { MOVIE_EV_INPUT, MOVIE_EV_OUTPUT, MOVIE_EV_FORMAT, MOVIE_EV_ERROR };   // DecoderEvents: EventType * per event
 enum { MOVIE_TYPE_VP9 = 3, MOVIE_MODE_BUFFER = 1, MOVIE_FORMAT_NV12 = 4, MOVIE_FLAG_EOS = 4 };
+enum { MOVIE_FORMAT_NV12_BUFFER = 3 };   // two-argument constructor ABI
 
 typedef struct { uint64_t frames, decode_ns, max_ns, errors, dropped, handed; } MovieStats;
 

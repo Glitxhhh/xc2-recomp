@@ -256,7 +256,7 @@ static void open_window(void *arg) {
     density_update();
     note_applied();
     refresh_rate_update();
-    if (cfg_get("XC2_BACKGROUND_WINDOW")) rt_log("gfx: XC2_BACKGROUND_WINDOW has no effect with SDL windows");
+    if (cfg_get("XC2_BACKGROUND_WINDOW")) rt_log("gfx: with SDL windows XC2_BACKGROUND_WINDOW only keeps the gamepad acting without the focus");
     if (gfx_cfg_fullscreen()) SDL_SetWindowFullscreen(g_win, true);
     SDL_SyncWindow(g_win);
     input_sdl_window(g_win);

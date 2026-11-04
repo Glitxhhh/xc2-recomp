@@ -91,10 +91,9 @@ static void voice_reset(ServerVoice *v) {
 static void update_voice(AudioRenderer *r, const AudrenVoiceIn *in) {
     need(in->id < (uint32_t)r->param.voice_count, "voice id out of range");
     ServerVoice *v = &r->voices[in->id];
-    if (in->is_new || !in->in_use) voice_reset(v);
+    if (in->is_new) voice_reset(v);
     v->in = *in;
     v->use_float_biquads = 0;
-    if (!in->in_use) return;
     need(in->wave_buffer_index < 4, "wave buffer index");
     // The play state as the DSP keeps it (Ryujinx VoiceInfo.UpdatePlayState): Stop on a voice that is not stopped
     // becomes Stopping, which the next render frame turns into Stopped after giving back every queued buffer.
@@ -127,10 +126,7 @@ static void skip_empty(AudioRenderer *r, ServerVoice *v) {
         v->loops_done = 0;
         v->index = (v->index + 1) & 3;
         r->empty_played++;
-        if (b->end_of_stream) {
-            v->played = 0;
-            break;
-        }
+        if (b->end_of_stream) v->played = 0;
     }
 }
 
@@ -235,7 +231,11 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
         need(chans[i].id < (uint32_t)vc * 6, "channel resource id");
         r->channels[chans[i].id] = chans[i];
     }
+    // Only in_use is defined in inactive wire entries; their stale IDs can name a live voice. Rebuild membership
+    // from active entries before resetting absent voices, so an unused slot cannot erase another slot's stream.
+    for (int i = 0; i < vc; i++) r->voices[i].in.in_use = 0;
     for (int i = 0; i < vc; i++) {
+        if (!voices[i * voice_stride + offsetof(AudrenVoiceIn, in_use)]) continue;
         AudrenVoiceIn v;
         AudrenVoiceInV2 v2;
         if (float_voices) {
@@ -257,6 +257,8 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
         server->use_float_biquads = (uint8_t)float_voices;
         if (float_voices) memcpy(server->float_biquads, v2.biquads, sizeof v2.biquads);
     }
+    for (int i = 0; i < vc; i++)
+        if (!r->voices[i].in.in_use) voice_reset(&r->voices[i]);
     for (int i = 0; i < ec; i++) r->effects[i] = effects[i];
     audio_mixer_update_effects(r);
     audio_mixer_update_routing(r, splitters, h.splitters, mixes, h.mixes, mc);
@@ -314,7 +316,7 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     }
     w += 0x10;                    // performance: nothing written
     w += AUDREN_BEHAVIOR_OUT;     // behavior: no errors
-    memcpy(w, &r->elapsed_frames, 8);
+    if (o.render_info) memcpy(w, &r->elapsed_frames, sizeof r->elapsed_frames);
     plat_mutex_unlock(&r->lock);
 }
 
@@ -342,11 +344,42 @@ static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) 
         v->offset = 0;
         v->loops_done = 0;
         v->index = (v->index + 1) & 3;
-        if (b->end_of_stream) {
-            v->played = 0;
-            break;
-        }
+        // End of stream only resets the played-sample count (Ryujinx VoiceState.MarkEndOfBufferWaveBufferProcessing): XC2
+        // sets the flag on every streamed buffer, so the samples left in this frame come from the next queued buffer.
+        if (b->end_of_stream) v->played = 0;
         skip_empty(r, v);
+    }
+}
+
+// XC2_TRACE=audio: every voice the game has started, once per 1000 render frames (5 s). A music stream is one voice per
+// channel, so this separates a stream that plays at zero gain (the game's own volume reached the mix) from one with no
+// started voice or no queued buffer (the stream stopped feeding). Gain is the voice volume times the loudest send of
+// any of its channels; audio_mixer_render routes through the same channel records. Render thread, lock held.
+static void voices_census(const AudioRenderer *r) {
+    int used = 0, started = 0, paused = 0;
+    for (int i = 0; i < r->param.voice_count; i++) {
+        const ServerVoice *v = &r->voices[i];
+        if (!v->in.in_use) continue;
+        used++;
+        started += v->state == SV_STARTED;
+        paused += v->state == SV_PAUSED;
+    }
+    rt_log("audren: voices at frame %llu: %d in use, %d started, %d paused", (unsigned long long)r->elapsed_frames, used,
+           started, paused);
+    for (int i = 0; i < r->param.voice_count; i++) {
+        const ServerVoice *v = &r->voices[i];
+        if (!v->in.in_use || v->state != SV_STARTED) continue;
+        float send = 0;
+        for (uint32_t c = 0; c < v->in.channel_count && c < 6; c++) {
+            int32_t id = v->in.channel_ids[c];
+            if (id < 0 || id >= r->param.voice_count * 6) continue;
+            for (int b = 0; b < 24; b++)
+                if (r->channels[id].mix[b] > send) send = r->channels[id].mix[b];
+        }
+        int queued = v->valid[0] + v->valid[1] + v->valid[2] + v->valid[3];
+        rt_log("audren:   voice %d: format %u, %u Hz, pitch %.3f, gain %.4f, mix %d, %d buffers queued, %u consumed", i,
+               v->in.sample_format, v->in.sample_rate, (double)v->in.pitch, (double)(v->in.volume * send), v->in.mix_id,
+               queued, v->consumed);
     }
 }
 
@@ -363,6 +396,7 @@ static void render_thread(void *p) {
             audio_mixer_render(r, frame);
             for (int i = 0; i < r->param.voice_count; i++) advance_voice(r, &r->voices[i], frame);
             r->elapsed_frames++;
+            if ((rt_trace & RT_TRACE_AUDIO) && r->elapsed_frames % 1000 == 0) voices_census(r);
             uint64_t given = r->stop_released + r->empty_played + r->flushed;
             if ((rt_trace & RT_TRACE_IPC) && given != r->logged_released && r->elapsed_frames % 1000 == 0) {
                 r->logged_released = given;

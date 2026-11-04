@@ -27,7 +27,6 @@
 #include "platform/platform.h"
 #include "romfs_path.h"
 
-#define XC2_APPLICATION_ID 0x010074f013262000ull   // XC2 (the name stays to keep the diff against XC2 Recomp small)
 #define FILE_BASE 0x200000000ull
 #define DIR_BASE 0x300000000ull
 #define NFILES 1024
@@ -39,7 +38,7 @@ enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO, M_AOC };   // M_SAVE: the wor
                                                               // save; M_AOC: add-on content (read-only)
 
 typedef struct { int kind; char name[32]; char root[1024]; } Mount;
-typedef struct { PlatFile *h; int mode, save; } File;   // h NULL = free; save: on a save-data mount
+typedef struct { PlatFile *h; int mode, save, option; } File;   // h NULL = free; save: on a save-data mount; option: bf2option
 typedef struct { char *name; int kind; uint64_t size; } Listed;
 typedef struct { Listed *e; int n, next, mode, used; } Dir;   // the directory's entries at open; used 0 = free
 
@@ -531,16 +530,22 @@ static uint32_t host_path_kind(const char *path, char *out, size_t cap, int *kin
     if (k == M_FREE) return FS_R_PATH_NOT_FOUND;
     if (kind) *kind = k;
     const char *rest = colon + 1;
-    for (const char *q = rest + 1; *q;) {
+    while (*rest == '/') ++rest;
+    if (!*rest) {
+        if (snprintf(out, cap, "%s", root) >= (int)cap) return FS_R_INVALID_PATH;
+        return 0;
+    }
+    // Collapse repeated separators before the component checks: the game joins a mount root and a leading-slash
+    // resource, so a field BGM request arrives as "aoc1://stream//bgm/m58.nop".
+    char rel[PATH_CAP];
+    if (!romfs_path_normalize(rest, rel, sizeof rel)) return FS_R_INVALID_PATH;
+    for (const char *q = rel; *q;) {
         const char *e = strchr(q, '/');
         size_t len = e ? (size_t)(e - q) : strlen(q);
-        if (!e && !len) break;
         if (!component_ok(q, len)) return FS_R_INVALID_PATH;
         q = e ? e + 1 : q + len;
     }
-    if (snprintf(out, cap, "%s%s", root, rest) >= (int)cap) return FS_R_INVALID_PATH;
-    size_t L = strlen(out);
-    while (L > strlen(root) && out[L - 1] == '/') out[--L] = 0;
+    if (snprintf(out, cap, "%s/%s", root, rel) >= (int)cap) return FS_R_INVALID_PATH;
     return 0;
 }
 
@@ -769,7 +774,7 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     plat_mutex_lock(&lock);
     for (int i = 0; i < NFILES; i++)
         if (!files[i].h) {
-            files[i] = (File){f, mode, save_writer};
+            files[i] = (File){f, mode, save_writer, strstr(path, "bf2option") != NULL};
             *out = FILE_BASE + (uint64_t)i;
             plat_mutex_unlock(&lock);
             if (save_writer) {
@@ -782,11 +787,26 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     rt_fatal("fs: host file handle table full (%d)", NFILES);
 }
 
+// The game's volume options as stored in bf2option.sav, each file transfer that covers them. Issues #13 and #33 report
+// no music on a boot after a save while voices and effects play. The offsets are SDataOption's u16 fields, 255 meaning
+// 1.0 (gf::GfMasterVolume::setupGame and gf::GfGameUtilSaveData::setupOptionSaveData, the same fields in 1.0.0 and in
+// 3.0.1 at main+0x2e9c08): +0x54 drives category 1, the field music, and +0x62 category 3, the title music of 3.0.1
+// (main+0x14f4ec). Zeros here mean a stored mute; the defaults (153 and 127) rule the file out.
+static void log_option_volumes(const char *what, const File *file, int64_t offset, const void *data, uint64_t size) {
+    if (!file->option || offset > 0x4c || offset + (int64_t)size < 0x66) return;
+    uint16_t v[13];
+    memcpy(v, (const uint8_t *)data + (0x4c - offset), sizeof v);
+    rt_log("fs: bf2option %s (%llu bytes): field music +0x54 = %u, title music +0x62 = %u, menu music +0x64 = %u of 255; "
+           "+0x4c.. %u %u %u %u %u %u %u %u %u %u", what, (unsigned long long)size, v[4], v[11], v[12], v[0], v[1], v[2],
+           v[3], v[5], v[6], v[7], v[8], v[9], v[10]);
+}
+
 static uint32_t read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
     if (romfs_handle(h)) return romfs_read(out, h, offset, buffer, size);
     PlatFile *f;
     int mode;
-    if (!out || offset < 0 || (!buffer && size) || !file_of(h, &f, &mode)) return FS_R_INVALID_ARGUMENT;
+    const File *file = out && offset >= 0 && (buffer || !size) ? file_of(h, &f, &mode) : NULL;
+    if (!file) return FS_R_INVALID_ARGUMENT;
     if (!(mode & FS_OPEN_READ)) return FS_R_OPEN_MODE;
     uint64_t done = 0;
     while (done < size) {
@@ -797,6 +817,7 @@ static uint32_t read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffe
         done += (uint64_t)n;
     }
     *out = done;
+    log_option_volumes("read", file, offset, buffer, done);
     return 0;
 }
 
@@ -823,6 +844,7 @@ static uint32_t write_file(uint64_t h, int64_t offset, const void *buffer, uint6
         done += (uint64_t)put;
     }
     if (option && (*option & 1)) plat_file_fsync(f);   // WriteOptionFlag_Flush
+    log_option_volumes("written", file, offset, buffer, size);
     return 0;
 }
 
@@ -935,15 +957,21 @@ static uint32_t delete_recursive(const char *path) {
 }
 
 static uint32_t open_directory(uint64_t *out, const char *path, int mode) {
-    if (romfs_owns(path)) rt_fatal("fs: OpenDirectory on the RomFS (%s) is not implemented", path);
-    char p[PATH_CAP];
-    uint32_t r = host_path(path, p, sizeof p);
-    if (r) return r;
     if (!out || mode < 1 || mode > 3) return FS_R_INVALID_ARGUMENT;
-    if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
-    Listing l;
-    int e = list_dir(p, &l);
-    if (e) return fs_result(e);
+    Listing l = {0};
+    uint32_t r;
+    if (romfs_owns(path)) r = romfs_list(path, listing_add, &l);
+    else {
+        char p[PATH_CAP];
+        r = host_path(path, p, sizeof p);
+        if (r) return r;
+        if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
+        r = fs_result(list_dir(p, &l));
+    }
+    if (r) {
+        listing_free(l.e, l.n);
+        return r;
+    }
     plat_mutex_lock(&lock);
     for (int i = 0; i < NDIRS; i++)
         if (!dirs[i].used) {
@@ -1179,24 +1207,31 @@ static void probe_paths(void) {
     static const struct { const char *path, *want; } cases[] = {
         {"rom:/a/b.bin", "a/b.bin"}, {"rom://a/b.bin", "a/b.bin"}, {"rom:///a/b.bin", "a/b.bin"},
         {"rom:/a", "a"},             {"rom:/../main", NULL},       {"rom://../a", NULL},
-        {"rom:/a/../b", NULL},       {"rom:/a/./b", NULL},         {"rom:/a//b", NULL},
+        {"rom:/a/../b", NULL},       {"rom:/a/./b", NULL},         {"rom:/a//b", "a/b"},
+        {"rom:/a///b/", "a/b"},      {"rom:/a//../b", NULL},       {"rom:/a//./b", NULL},
+        {"rom:/stream//bgm/m58.nop", "stream/bgm/m58.nop"},
         {"rom:/a\\b", NULL},         {"rom:/", NULL},              {"rom://", NULL},
         {"rom:a", NULL},             {"ro:/a", NULL},              {"romx:/a", NULL},
         {"rom:/.", NULL},            {"rom:/..", NULL},            {"ROM:/a", NULL},
     };
     int bad = 0;
     for (unsigned i = 0; i < sizeof cases / sizeof *cases; i++) {
-        const char *got = romfs_path_relative("rom", cases[i].path);
-        if (cases[i].want ? !got || strcmp(got, cases[i].want) : got != NULL) {
+        char got[64];
+        int ok = romfs_path_relative("rom", cases[i].path, got, sizeof got);
+        if (cases[i].want ? !ok || strcmp(got, cases[i].want) : ok) {
             bad++;
-            printf("  FAIL: romfs_path_relative(\"rom\", \"%s\") = %s%s%s\n", cases[i].path, got ? "\"" : "",
-                   got ? got : "NULL", got ? "\"" : "");
+            printf("  FAIL: romfs_path_relative(\"rom\", \"%s\") = %s%s%s\n", cases[i].path, ok ? "\"" : "",
+                   ok ? got : "NULL", ok ? "\"" : "");
         }
     }
     checks++;
     failures += bad > 0;
-    CHECK(!romfs_path_relative(NULL, "rom:/a") && !romfs_path_relative("", ":/a") && !romfs_path_relative("rom", NULL),
-          "romfs_path_relative accepts an empty mount or path");
+    char out[8];
+    CHECK(!romfs_path_relative(NULL, "rom:/a", out, sizeof out) &&
+              !romfs_path_relative("", ":/a", out, sizeof out) &&
+              !romfs_path_relative("rom", NULL, out, sizeof out) &&
+              !romfs_path_relative("rom", "rom:/a", out, 1),
+          "romfs_path_relative accepts an empty mount or path, or writes past a short buffer");
     printf("paths: %u romfs_path.h normalisation cases: %s\n", (unsigned)(sizeof cases / sizeof *cases),
            bad ? "FAIL" : "ok");
 }
@@ -1532,11 +1567,15 @@ static void probe_storage(void) {
     CHECK(RES(S_CREATE_FILE, U("save:/a\\b"), 0) == FS_R_INVALID_PATH, "save:/a\\b");
     CHECK(RES(S_CREATE_FILE, U("save:/a:b"), 0) == FS_R_INVALID_PATH, "save:/a:b");
     CHECK(RES(S_CREATE_FILE, U("save:/a."), 0) == FS_R_INVALID_PATH, "save:/a.");
+    CHECK(RES(S_OPEN_FILE, U(&h), U("save://probe.sav"), FS_OPEN_READ) == 0, "save://probe.sav");
+    CALL(S_CLOSE_FILE, h);
     CHECK(RES(S_CREATE_FILE, U("nomount:/x"), 0) == FS_R_PATH_NOT_FOUND, "a path on no mount");
 
     // directories
     CHECK(RES(S_CREATE_DIRECTORY, U("save:/dir")) == 0 && RES(S_CREATE_FILE, U("save:/dir/inner.bin"), 8) == 0,
           "CreateDirectory");
+    CHECK(RES(S_OPEN_FILE, U(&h), U("save://dir//inner.bin"), FS_OPEN_READ) == 0, "save://dir//inner.bin");
+    CALL(S_CLOSE_FILE, h);
     CHECK(RES(S_ENTRY_TYPE, U(&type), U("save:/dir")) == 0 && type == FS_ENTRY_DIRECTORY, "GetEntryType (directory)");
     static DirectoryEntry ents[8];
     CHECK(RES(S_OPEN_DIRECTORY, U(&d), U("save:/"), 3) == 0, "OpenDirectory");

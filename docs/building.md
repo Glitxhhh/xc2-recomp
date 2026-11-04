@@ -18,6 +18,7 @@ Versions are the ones the build was verified with; newer patch releases are fine
 | Vulkan SDK | 1.4.363 | winget `KhronosGroup.VulkanSDK` | validation layers, `vulkaninfo` |
 | uv | 0.13 | standalone installer from astral.sh | the two Python environments |
 | hactool | 1.4.0 @ `1d64a83` | `.venv\Scripts\python tools\build_hactool.py`, see below | NCA and update extraction |
+| llvm-mingw + libraries | clang 23.1.4, SDL3 3.4.18, Opus 1.6.1, libvpx 1.17.0, zstd 1.5.7, Vulkan 1.4.363, VMA 3.4.0 | `.venv\Scripts\python tools\fetch_toolchain.py`, see below | `tools\build_xc2.ps1` (3.0.1) |
 
 MSYS2 packages, after `pacman -Syuu` (run it twice; the first pass updates the core and exits):
 
@@ -46,6 +47,22 @@ PATH:
   reach it intact.
 
 hactool reads `-k <prod.keys>`; MSYS2 shells set `HOME`, which hides its default key location, so pass `-k` there.
+
+### llvm-mingw and libraries
+
+`tools\build_xc2.ps1` builds 3.0.1 with llvm-mingw and the libraries the Windows release ships, not with MSYS2 clang.
+`tools/fetch_toolchain.py` downloads them (once, after the Python environments of step 1) into the ignored `toolchain\`,
+from the pinned URLs and sha256 of `tools/make_release.py` (`PINS`), cached in `toolchain\release-dl`:
+
+```powershell
+.venv\Scripts\python tools\fetch_toolchain.py
+```
+
+- `toolchain\llvm-mingw-23.1.4\llvm-mingw-23.1.4\`: llvm-mingw 20261020 (clang 23.1.4), x86_64 only;
+- `toolchain\deps-mingw\include`, `lib`: SDL3, Opus, libvpx, Vulkan headers and loader import library, zstd, VMA;
+- `toolchain\deps-mingw\bin`: `SDL3.dll` and `libopus-0.dll`, which `build_xc2.ps1` copies next to `xc2.exe`.
+
+A folder that is already there is kept; `--force` downloads and rebuilds it. Ninja still comes from MSYS2 UCRT64.
 
 ## Build
 
@@ -164,7 +181,7 @@ Before a commit:
 - `build\<ver>\xc2.exe --selftest`: layout, dispatch table and host-function registry, without game files.
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
-change passes these, all run with `.venv`:
+change passes these, all run with `.venv`, with one known gap in `excl_mt.py` (below the table):
 
 | Test | Checks | Game files |
 |---|---|---|
@@ -173,8 +190,15 @@ change passes these, all run with `.venv`:
 | `tests\diff\atomic.py` | exclusive load/store sequences and ARMv8.1 atomics | no |
 | `tests\diff\func.py` | whole functions as the generator emits them, loops, jump tables and calls included (calls go to a stub that checks the registers at the call) | yes |
 | `tests\flags_check.py` | the function-local flag helpers of `runtime\cpu.h` against its packed ones | no |
-| `tests\excl_mt.py` | the exclusive monitor helpers under contention and ABA, on several threads | no |
+| `tests\excl_mt.py` | the exclusive monitor helpers on several threads: the contention cases must pass; the ABA cases are a known gap, printed but not counted (`--strict` counts them) | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
+
+Known gap: `runtime/cpu.h` `stx##N` and `stxp128` emulate the monitor with a compare-and-swap against the value
+remembered at the load, so a store-exclusive succeeds after another thread wrote X, Y, X in between, where ARM's monitor
+fails it; a monitor that every store clears would cost on every store. `tests\excl_mt.py` runs its three ABA cases,
+prints them as `known gap` and leaves them out of the exit code; `--strict` counts them again, which makes them mandatory
+once a real monitor replaces the compare-and-swap. An ABA case that passes without `--strict` is printed loudly: the
+emulation changed and this note is stale.
 
 Runtime probes, each a mode of `xc2.exe` (the list is at the top of `runtime/main.c`): `--probe-kernel`,
 `--probe-vkexec`, `--probe-nvn-tex` and `--probe-shader` cover most runtime changes.

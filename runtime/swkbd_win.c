@@ -1,6 +1,6 @@
 // The Win32 front end of the software keyboard (swkbd.h): a modal window owned by the game window, run on the guest
-// thread that called. The text starts as the game's initial text, else a default name from the catalog (ui_text.c),
-// selected, so a controller can confirm it: A = OK, B = cancel (each after it was seen released); Enter / Esc and the
+// thread that called. The text starts as the game's initial text, else empty. Initial text is selected so a
+// controller can confirm it: A = OK, B = cancel (each after it was seen released); Enter / Esc and the
 // buttons work too.
 //   XC2_SWKBD_TEST=ok|cancel   open the window, then press OK / Cancel on the first timer tick
 #include <windows.h>

@@ -49,6 +49,9 @@ void gfx_window_mark_dirty(void) { plat_xchg32(&g_dirty, 1); }
 
 // The window gained or lost the focus: the game hears it as nn::oe's focus state and a notification message.
 void gfx_window_focus_changed(int in) {
+    // In the log because a crash report's log otherwise cannot say whether, or how long before, the focus changed.
+    rt_log("gfx: the window %s the focus at frame %llu", in ? "gained" : "lost",
+           (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
     plat_xchg32(&g_focused, in);
     oe_set_focus(in);                          // pinned to 1 by XC2_ASSUME_FOCUS inside
     oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
@@ -525,6 +528,35 @@ void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
     out[0] = (dw - out[2]) / 2, out[1] = (dh - out[3]) / 2;
 }
 
+// A failed vkQueueSubmit2 changes nothing it was given, so the frame's acquire semaphore stays signalled and its fence,
+// already reset, stays unsignalled: acquiring with that semaphore again is invalid, and waiting on that fence never
+// ends (present_image gave up after 5 s on every later frame of this slot). An empty submission consumes the semaphore
+// and signals the fence, which also keeps the order against the image's acquisition. If the queue refuses that too
+// (out of memory, device lost), both objects are replaced once the device is idle. The image stays acquired and is
+// never presented: it has no picture in it, so the swapchain is marked stale and create_swapchain releases it.
+// Called with g_pl held.
+static void recover_failed_submit(VkCtx *c, unsigned slot) {
+    VkSemaphoreSubmitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_acquire[slot],
+                                  .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = 1, .pWaitSemaphoreInfos = &wait};
+    vk_queue_lock();
+    VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, g_fence[slot]);
+    if (r != VK_SUCCESS) {
+        vk_device_fault_report(r);
+        rt_log("gfx: the empty submission after a failed present failed too (%d): new sync objects", (int)r);
+        vkDeviceWaitIdle(c->device);
+        vkDestroySemaphore(c->device, g_acquire[slot], NULL);
+        vkDestroyFence(c->device, g_fence[slot], NULL);
+        VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT};
+        VkSemaphoreCreateInfo semi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        if (vkCreateFence(c->device, &fi, NULL, &g_fence[slot]) != VK_SUCCESS ||
+            vkCreateSemaphore(c->device, &semi, NULL, &g_acquire[slot]) != VK_SUCCESS)
+            rt_fatal("gfx: cannot replace the present's fence and semaphore after a failed submission");
+    }
+    vk_queue_unlock();
+    plat_xchg32(&g_dirty, 1);
+}
+
 static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
     gfx_window_start();
@@ -671,6 +703,9 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     } else {
         vk_device_fault_report(r);
         rt_log("gfx: present submit failed (%d)", (int)r);
+        recover_failed_submit(c, slot);
+        g_th_pending[slot] = 0;   // the commands never ran: no thumbnail to publish
+        cap = 0;                  // and no copy of the image to read back
     }
     g_frame++;
     if (cap) {

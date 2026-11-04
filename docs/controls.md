@@ -70,6 +70,8 @@ Mouse motion (raw input) becomes right-stick deflection. Each presented frame ta
 
 The stick direction bits (`StickLLeft` to `StickRDown`) are derived from the sticks at 50% deflection. A gamepad plugged in later is picked up within one second; with none connected the log says `input: no gamepad`.
 
+The keyboard, the mouse and the gamepad count only while the game window is the foreground window. Losing the focus releases every button and stick, stops the rumble and leaves the six-axis sensor at rest; `XC2_BACKGROUND_WINDOW=1` or `XC2_ASSUME_FOCUS=1` keeps the gamepad acting without the focus, for unattended runs.
+
 ## Scripted input
 
 `XC2_INPUT_SCRIPT=<file>` replays presses. It is ORed with real input and still applies under `XC2_INPUT=none`. One event per line, `#` starts a comment:

@@ -525,7 +525,8 @@ uint32_t romfs_mount(const char *name) {
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
-    const char *p = romfs_path_relative(mount_name, path);
+    char rel[4200];
+    const char *p = romfs_path_relative(mount_name, path, rel, sizeof rel) ? rel : NULL;
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
@@ -622,7 +623,8 @@ void romfs_close(uint64_t h) {
 
 uint32_t romfs_entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID;
-    const char *p = romfs_path_relative(mount_name, path);
+    char rel[4200];
+    const char *p = romfs_path_relative(mount_name, path, rel, sizeof rel) ? rel : NULL;
     if (!p) return FS_R_PATH_NOT_FOUND;
     if (file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;
@@ -635,6 +637,51 @@ uint32_t romfs_entry_type(int *out, const char *path) {
         return 0;
     }
     return FS_R_PATH_NOT_FOUND;
+}
+
+uint32_t romfs_list(const char *path, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx) {
+    if (!cb) return FS_R_INVALID_ARGUMENT;
+    if (!romfs_owns(path)) return FS_R_PATH_NOT_FOUND;
+    const char *p = path + strlen(mount_name) + 1;
+    if (*p != '/') return FS_R_PATH_NOT_FOUND;
+    while (*p == '/') p++;
+    if (*p && !romfs_path_valid_relative(p)) return FS_R_PATH_NOT_FOUND;
+    char folder[4096];
+    size_t n = strlen(p);
+    if (n + 2 > sizeof folder) return FS_R_INVALID_PATH;
+    memcpy(folder, p, n + 1);
+    if (n && folder[n - 1] != '/') folder[n++] = '/', folder[n] = 0;
+    if (n && !folder_exists(folder)) return FS_R_PATH_NOT_FOUND;
+
+    // Merge the two sorted prefix ranges so a child directory appears once even when overlays add files to it.
+    uint64_t i = lower(folder);
+    size_t k = added_lower(folder);
+    char previous[769] = "";
+    for (;;) {
+        const char *base = i < file_count ? entry_name(entry(i)) : NULL;
+        const char *extra = k < nadded ? added[k] : NULL;
+        if (base && strncmp(base, folder, n)) base = NULL;
+        if (extra && strncmp(extra, folder, n)) extra = NULL;
+        if (!base && !extra) break;
+        int use_extra = extra && (!base || strcmp(extra, base) < 0);
+        uint64_t index = use_extra ? file_count + k++ : i++;
+        const char *name = (use_extra ? extra : base) + n;
+        const char *slash = strchr(name, '/');
+        size_t len = slash ? (size_t)(slash - name) : strlen(name);
+        if (!len || len >= sizeof previous) continue;   // nn::fs cannot represent this entry
+        char child[769];
+        memcpy(child, name, len);
+        child[len] = 0;
+        if (!strcmp(child, previous)) continue;
+        strcpy(previous, child);
+        uint64_t size = 0;
+        if (!slash) {
+            uint32_t slot = overlay_slot(index);
+            size = slot ? overlays[slot - 1].size : entry(index).size;
+        }
+        if (!cb(child, slash ? PLAT_FS_DIR : PLAT_FS_FILE, size, ctx)) break;
+    }
+    return 0;
 }
 
 // ---- overrides

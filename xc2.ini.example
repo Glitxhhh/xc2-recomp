@@ -82,7 +82,7 @@
 # push_skip = 1
 # Submit GPU work in parts every N draws between passes so the GPU starts earlier (0 to 1000; 0 = off), each part at
 # least split_us microseconds long (0 to 20000).
-# split_draws = 64
+# split_draws = 32
 # split_us = 1000
 
 # Vulkan.
@@ -129,6 +129,11 @@
 # Picture shape when the window's differs from the game resolution's (a 16:9 game on a 16:10 screen): keep (its
 # proportions, with black bars) or stretch (over the whole window). Changes take effect at once.
 # picture_fit = keep
+# Cloud Sea fog near the cloud top: 1 keeps a low camera from dipping into the "inside the clouds" fog when it is less
+# than 1 m under the top. Where the floor sits just under it (Goldmouth Return Port's dock), tilting the camera up
+# otherwise covers the lower screen with flat blue-grey fog, or the whole screen. 0 (default) is the game's own look.
+# Read at start.
+# cloud_top_fix = 0
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.

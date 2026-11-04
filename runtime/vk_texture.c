@@ -1131,22 +1131,55 @@ void vk_texture_new_submit(void) {
 // ---------------------------------------------------------------- texel reads and writes
 typedef struct { unsigned level, layer0; int nz, is3d, bw, bh, bpb; size_t wb, hb, row, img, x0, y0; } Region;
 
+// Check before adding offsets or shifting by a guest mip level. Array z selects layers; 3D z selects mip slices.
+// Reject whole requests instead of clipping: clipping would also need to preserve the caller's row/image strides.
+static int region_fits(const Region *g, const NVNcopyRegion *r, uint32_t width, uint32_t height, uint32_t depth,
+                       uint32_t layers, uint32_t levels) {
+    if (g->level >= levels || g->level >= 32 || r->xoffset < 0 || r->yoffset < 0 || r->zoffset < 0 ||
+        r->width <= 0 || r->height <= 0 || g->nz <= 0) return 0;
+    uint32_t w = mip(width, g->level), h = mip(height, g->level);
+    uint32_t x = (uint32_t)r->xoffset, y = (uint32_t)r->yoffset, z = (uint32_t)r->zoffset;
+    if (x >= w || y >= h || (uint32_t)r->width > w - x || (uint32_t)r->height > h - y) return 0;
+    // Compressed copies may end in a partial block only at the edge of the mip.
+    if ((r->width % g->bw && (uint32_t)r->width != w - x) ||
+        (r->height % g->bh && (uint32_t)r->height != h - y)) return 0;
+    uint32_t nz = g->is3d ? mip(depth, g->level) : layers;
+    if (!g->is3d) {
+        if (g->layer0 >= nz) return 0;
+        nz -= g->layer0;
+    }
+    return z < nz && (uint32_t)g->nz <= nz - z;
+}
+
 static int region_of(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint64_t row, uint64_t img, Region *g) {
+    static volatile int32_t n_bad;
     g->bpb = nvn_fmt_bpb(t->d.format, &g->bw, &g->bh);
     if (!g->bpb || r->width <= 0 || r->height <= 0 || r->depth < 0 || r->xoffset < 0 || r->yoffset < 0 || r->zoffset < 0 ||
         r->xoffset % g->bw || r->yoffset % g->bh)
-        return 0;
+        goto bad;
     g->level = v && v->set_levels ? v->base_level : 0;
     g->layer0 = v && v->set_layers ? v->min_layer : 0;
     g->nz = r->depth ? r->depth : 1;
     g->is3d = t->d.target == NVN_TEXTURE_TARGET_3D;
-    g->wb = (size_t)((r->width + g->bw - 1) / g->bw) * (size_t)g->bpb;
-    g->hb = (size_t)(r->height + g->bh - 1) / (size_t)g->bh;
+    uint32_t h = t->d.target == NVN_TEXTURE_TARGET_1D || t->d.target == NVN_TEXTURE_TARGET_1D_ARRAY ? 1 : t->d.height;
+    if (!region_fits(g, r, t->d.width, h, t->d.depth, t->L.layers, umax(t->d.levels, 1))) goto bad;
+    if (!g->is3d && v && v->set_layers && v->nlayers &&
+        ((uint32_t)r->zoffset >= v->nlayers || (uint32_t)g->nz > v->nlayers - (uint32_t)r->zoffset)) goto bad;
+    g->wb = ((size_t)r->width + g->bw - 1) / g->bw * g->bpb;
+    g->hb = ((size_t)r->height + g->bh - 1) / g->bh;
     g->row = row ? row : g->wb;
+    if (row > SIZE_MAX || img > SIZE_MAX || g->row < g->wb || g->row > SIZE_MAX / g->hb) goto bad;
     g->img = img ? img : g->row * g->hb;
+    size_t span = (g->hb - 1) * g->row + g->wb;
+    if (g->img < span || g->img > SIZE_MAX / (size_t)g->nz) goto bad;
     g->x0 = (size_t)(r->xoffset / g->bw) * (size_t)g->bpb;
     g->y0 = (size_t)(r->yoffset / g->bh);
     return 1;
+bad:
+    log_limited(&n_bad, "texels: rejected region %d,%d,%d %dx%dx%d (format %#x, level %u, layer %u)",
+                r->xoffset, r->yoffset, r->zoffset, r->width, r->height, r->depth, t->d.format,
+                v && v->set_levels ? v->base_level : 0, v && v->set_layers ? v->min_layer : 0);
+    return 0;
 }
 
 // Pool bytes <-> caller rows of the region alone (nvn_texels_box). MacNativeGames' nvn_mtl.m goes through a
@@ -1174,7 +1207,7 @@ static int read_aspect(const Tex *e, VkImageAspectFlags *a) {
 
 // Image <-> caller rows through a staging buffer; the GPU copy is waited for.
 static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t *mem, int write) {
-    static volatile int32_t n_astc, n_ds;
+    static volatile int32_t n_astc, n_ds, n_region;
     VkCtx *c = vk_ctx();
     VkImageAspectFlags aspect;
     if (e->f.astc_bw && !write) {
@@ -1186,7 +1219,14 @@ static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t
         log_limited(&n_ds, "texels of packed depth-stencil format %#x are not copied", e->t.d.format);
         return 0;
     }
-    if (g->level >= e->pub.levels) return 0;
+    // runtime/vk_texture.c create_tex can reduce the level count. Recheck the image before staging or recording a copy.
+    if (e->pub.samples != 1 || !region_fits(g, r, e->pub.width, e->pub.height, e->pub.depth,
+                                           e->pub.layers, e->pub.levels)) {
+        log_limited(&n_region, "texels: rejected image region %d,%d,%d %dx%dx%d at level %u, layer %u of texture %#llx",
+                    r->xoffset, r->yoffset, r->zoffset, r->width, r->height, r->depth, g->level, g->layer0,
+                    (unsigned long long)e->pub.addr);
+        return 0;
+    }
     uint32_t w = (uint32_t)r->width, h = (uint32_t)r->height;
     int rgb = e->f.expand_rgb, astc = e->f.astc_bw != 0, agpu = astc && write && vk_astc_gpu();
     size_t texels = (size_t)w * h, ib = agpu ? 0 : astc ? 4 : rgb ? (size_t)g->bpb / 3 * 4 : 0;
@@ -1286,13 +1326,8 @@ int vk_texture_read_image(const tex_t *t, const view_t *v, const NVNcopyRegion *
 // ReadTexels: the pool bytes are the content of a mirrored texture the GPU has not rendered into; every other texture
 // is read back from its image.
 void vk_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row, uint64_t img) {
-    static volatile int32_t n_bad;
     Region g;
-    if (!region_of(t, v, r, row, img, &g)) {
-        log_limited(&n_bad, "ReadTexels: invalid region %d,%d,%d %dx%dx%d (format %#x)", r->xoffset, r->yoffset,
-                    r->zoffset, r->width, r->height, r->depth, t->d.format);
-        return;
-    }
+    if (!region_of(t, v, r, row, img, &g)) return;
     lock();
     Tex *e = entry_of(t);
     int ok = 0;
@@ -1310,9 +1345,9 @@ void vk_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uin
 void vk_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, uint64_t row, uint64_t img) {
     static volatile int32_t n_bad;
     Region g;
-    if (!region_of(t, v, r, row, img, &g) || (v && v->set_format && v->format != t->d.format)) {
-        log_limited(&n_bad, "WriteTexels: invalid region %d,%d,%d %dx%dx%d or view format (format %#x)", r->xoffset,
-                    r->yoffset, r->zoffset, r->width, r->height, r->depth, t->d.format);
+    if (!region_of(t, v, r, row, img, &g)) return;
+    if (v && v->set_format && v->format != t->d.format) {
+        log_limited(&n_bad, "WriteTexels: view format %#x differs from texture format %#x", v->format, t->d.format);
         return;
     }
     lock();

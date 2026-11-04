@@ -661,7 +661,7 @@ static void probe_media_gfx(void) {
            "vsync event %s\n", display, layer, window, vsync ? "bound (auto-clear)" : "FAILED");
 }
 
-// ---- software keyboard (swkbd.c): ShowKeyboardArg built by the SDK's own setters, as the horse naming does
+// ---- software keyboard (swkbd.c): synthetic requests built by the SDK's own setters
 enum { KB_TYPE = 0x00, KB_DISABLED = 0x1c, KB_HEADER = 0x24, KB_GUIDE = 0x1a8, KB_MAX_LEN = 0x3ac, KB_MIN_LEN = 0x3b0,
        KB_UTF8 = 0x3bd, KB_INIT_LEN = 0x3c4, STRING_SIZE = 0x7d4, SWKBD_CANCELED = 0x29f };
 #define ARG_WORK (RT_V143 ? 0x518 : 0x4d0)   // SDK 20.5 grew KeyboardConfig (swkbd.c)
@@ -717,25 +717,28 @@ static void probe_swkbd(void) {
     rt_call(gc, header, 2, U(arg), U(u16("Hdr")));
     rt_call(gc, guide, 2, U(arg), U(u16("Gd")));
     memcpy(arg + ARG_WORK, &w, 8), memcpy(arg + ARG_WORK_SIZE, &ws, 8);
-    rt_call(gc, initial, 2, U(arg), U(u16("Zelda")));
+    rt_call(gc, initial, 2, U(arg), U(u16("Start")));
     int32_t init_len;
     memcpy(&init_len, arg + KB_INIT_LEN, 4);
     CHECK(u16_is((uint16_t *)(arg + KB_HEADER), "Hdr") && u16_is((uint16_t *)(arg + KB_GUIDE), "Gd") && init_len == 5,
           "ShowKeyboardArg layout: header, guide or initial text not where swkbd.c reads them");
 
-    const char *def = ui_text(UI_SWKBD_DEFAULT_NAME);
     const KbCase cases[] = {
-        {2, 8, 9, 0, 0x2c, 0, 0, NULL, "Epona", "Epona", 0},                  // XC2's horse naming (main+0x1ecbf64)
+        {2, 8, 9, 0, 0x2c, 0, 0, NULL, "Entry", "Entry", 0},                  // synthetic name request
         {2, 8, 9, 0, 0x2c, 0, 0, NULL, "ABCDEFGHIJKL", "ABCDEFGHI", 0},        // at most 9
         {2, 8, 9, 0, 0x2c, 0, 0, NULL, "a@b%c\\d e/f", "abcd e/f", 0},         // '@' '%' '\' disabled
         {2, 8, 9, 0, 0x2c, 0, 0, NULL, "<cancel>", "", SWKBD_CANCELED},
-        {2, 8, 9, 0, 0x2c, 0, 0, NULL, "<initial>", def, 0},                   // no initial text: the default name
-        {0, 2, 0, 0, 0, 0, 0, "Zelda", "<initial>", "Zelda", 0},                // initial text from the work buffer
+        {2, 8, 9, 0, 0x2c, 0, 0, NULL, "<initial>", "", 0},                    // no initial text: stays empty
+        {2, 8, 9, 1, 0x2c, 0, 0, NULL, "<initial>", "", SWKBD_CANCELED},       // empty is below the minimum
+        {0, 2, 0, 0, 0, 0, 0, "Start", "<initial>", "Start", 0},                // initial text from the work buffer
         {0, 2, 0, 0, 0, 1, 0, NULL, "\xe5\xb0\x8f\xe9\xa9\xac" "Ab", "\xe5\xb0\x8f\xe9\xa9\xac" "Ab", 0},   // UTF-8 out
         {0, 2, 3, 0, 0, 0, 0, NULL, "\xe5\xb0\x8f\xe9\xa9\xac\xf0\x9f\x90\xb4", "\xe5\xb0\x8f\xe9\xa9\xac", 0},   // no half pair
         {0, 1, 0, 0, 0, 0, 0, NULL, "a1b2c3", "123", 0},                       // number pad
         {0, 2, 9, 3, 0, 0, 0, NULL, "ab", "", SWKBD_CANCELED},                  // shorter than the minimum
-        {2, 8, 9, 0, 0x2c, 0, 1, NULL, "ok", def, 0},                          // the window, OK pressed
+        {2, 8, 9, 0, 0x2c, 0, 1, "Start", "ok", "Start", 0},                  // the window, OK pressed
+#ifdef _WIN32
+        {2, 8, 9, 0, 0x2c, 0, 1, NULL, "ok", "", 0},                         // the window starts empty
+#endif
         {2, 8, 9, 0, 0x2c, 0, 1, NULL, "cancel", "", SWKBD_CANCELED},          // the window, Cancel pressed
     };
     int bad = 0, n = (int)(sizeof cases / sizeof *cases);
@@ -762,8 +765,8 @@ static void probe_swkbd(void) {
     input_poll_ui(&b, &lx, &ly, &rx, &ry);
     if (!b) input_poll(&b, &lx, &ly, &rx, &ry);
     printf("swkbd: %d of %d cases (arguments from the SDK's MakePreset/SetHeaderText/SetGuideText/SetInitialText; "
-           "horse-name limits, disabled keys, cancel 0x29f, default name \"%s\", UTF-8 out, surrogate pairs, number pad, "
-           "minimum length, the Win32 window with OK and Cancel)\n", n - bad, n, def);
+           "length limits, disabled keys, cancel 0x29f, empty initial text, UTF-8 out, surrogate pairs, number pad, "
+           "minimum length, the window with OK and Cancel)\n", n - bad, n);
 }
 
 // ---- the menu's input gate: Minus+Plus is consumed, a menu that is open leaves the game a neutral pad

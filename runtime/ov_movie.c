@@ -10,7 +10,8 @@
 // relocations by name: the HOST_OVERRIDE entries below replace them. A VP9 buffer-mode decoder (type 3, mode 1) is a host
 // object, +0 the library's vtable, +8 the host Movie (where the library keeps its DecoderImpl); any other decoder runs
 // the original code. Behaviour follows DecoderImpl:
-// - output format 4 is packed NV12 (Y plane, then interleaved UV; stride = width), copied into the client's Buffer;
+// - packed NV12 (Y plane, then interleaved UV; stride = width) is copied into the client's Buffer; its enum is 3
+//   with the two-argument constructor (3.0.1), 4 with the constructor taking mode and priority;
 // - input and output buffers are indices handed out FIFO, as MediaCodec does; input flag 4 / output flag 4 = end of stream;
 // - client events {input available, output available, format changed, error} (DecoderEvents, 4 EventType pointers) are
 //   signalled with nn::os::SignalEvent on a guest thread.
@@ -50,13 +51,14 @@ const char *const movie_symbols[MOVIE_ENTRIES] = {
     "_ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferE", "_ZN5movie7Decoder19GetOutputBufferSizeEPiS1_",
     "_ZN5movie7Decoder24ReleaseOutputBufferIndexEi", "_ZN5movie7Decoder12GetLastErrorEv",
     "_ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferEPNS_9MediaDataE",
-    "_ZN5movie7Decoder21GetOutputBufferFormatEiPNS_9MediaDataE"};
+    "_ZN5movie7Decoder21GetOutputBufferFormatEiPNS_9MediaDataE",
+    "_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatE"};
 
 typedef struct { int index; unsigned flags; int64_t time; } Ready;
 typedef struct { int index, offset, size; int64_t time; unsigned flags; } Pending;
 typedef struct {
     uint64_t guest;                          // the movie::Decoder object
-    int format, configured, started, w, h, eos_in, format_sent, last_error, sent;
+    int format, nv12_format, configured, started, w, h, eos_in, format_sent, last_error, sent;
     uint64_t events;                         // guest DecoderEvents *: EventType * per MOVIE_EV_*
     vpx_codec_ctx_t vpx;
     int vpx_live;
@@ -139,7 +141,9 @@ static void guest_init(void) {
         G.md_set_rect = need("_ZN5movie9MediaData7SetRectEPKciiii");
         G.md_set_string = need("_ZN5movie9MediaData9SetStringEPKcS2_");
         G.vptr = need("_ZTVN5movie7DecoderE") + 0x10;
-        for (int i = 0; i < MOVIE_ENTRIES; i++) G.orig[i] = need(movie_symbols[i]);
+        // The constructor ABI varies between SDKs. Only methods shared by both ABIs are mandatory here.
+        for (int i = 0; i < MOVIE_ENTRIES; i++)
+            G.orig[i] = i == MOVIE_CTOR || i == MOVIE_CTOR_BUFFER ? ldr_symbol(movie_symbols[i]) : need(movie_symbols[i]);
         plat_xchg32(&g_ready, 1);
     }
     plat_mutex_unlock(&g_init);
@@ -162,6 +166,8 @@ static void md_set_int32(Cpu *c, uint64_t md, const char *k, int v) { rt_call(c,
 
 // The original code of an entry with the caller's arguments; its result stays in x0.
 static void pass(Cpu *c, int which) {
+    // A library-owned decoder can reach a method before either host constructor has run.
+    guest_init();
     uint64_t a[8];
     memcpy(a, c->x, sizeof a);
     if (!G.orig[which]) rt_fatal("movie: no original code for %s", movie_symbols[which]);
@@ -289,17 +295,21 @@ static void worker(void *arg) {
         if (p.size > 0) {
             m->st.decode_ns += dt;
             if (dt > m->st.max_ns) m->st.max_ns = dt;
-            if (bad) rt_fatal("movie: VP9 frame layout differs from the configured %dx%d I420", w, h);
-            if (e != VPX_CODEC_OK || !got) {
+            if (bad || e != VPX_CODEC_OK || !got) {
                 m->out_held[slot] = 0;
-                if (e != VPX_CODEC_OK) {
+                if (bad || e != VPX_CODEC_OK) {
                     m->st.errors++;
                     m->last_error = ST_ERROR;
                     m->owed |= 1u << MOVIE_EV_ERROR;
                     if (m->st.errors <= 4) {
-                        const char *d = vpx_codec_error_detail(&m->vpx);
-                        rt_log("movie: VP9 decode error on a %d-byte frame at %lld us: %s", p.size, (long long)p.time,
-                               d ? d : vpx_codec_err_to_string(e));
+                        if (bad)
+                            rt_log("movie: VP9 frame layout differs from the configured %dx%d I420 at %lld us",
+                                   w, h, (long long)p.time);
+                        else {
+                            const char *d = vpx_codec_error_detail(&m->vpx);
+                            rt_log("movie: VP9 decode error on a %d-byte frame at %lld us: %s", p.size, (long long)p.time,
+                                   d ? d : vpx_codec_err_to_string(e));
+                        }
                     }
                 }
             } else {
@@ -447,21 +457,21 @@ int movie_quiet(uint64_t obj) {
 }
 
 // ---- entries
-// Decoder(DecoderType type, DecoderOutputFormat format, DecoderMode mode, int priority)
-static void ov_ctor(Cpu *c) {
+static void construct(Cpu *c, int mode, int nv12_format, int which) {
     uint64_t obj = arg_x(c, 0);
-    int type = (int)arg_x(c, 1), format = (int)arg_x(c, 2), mode = (int)arg_x(c, 3);
+    int type = (int)arg_x(c, 1), format = (int)arg_x(c, 2);
     guest_init();
     if (type != MOVIE_TYPE_VP9 || mode != MOVIE_MODE_BUFFER || host_off()) {
         rt_log("movie: decoder type %d mode %d format %d left to the library%s", type, mode, format,
                host_off() ? " (XC2_MOVIE_HOST=0)" : " (only VP9 in buffer mode runs on the host)");
-        pass(c, MOVIE_CTOR);
+        pass(c, which);
         return;
     }
     Movie *m = calloc(1, sizeof *m);
     if (!m) rt_fatal("movie: decoder allocation");
     m->guest = obj;
     m->format = format;
+    m->nv12_format = nv12_format;
     plat_mutex_init(&m->mu);
     plat_cond_init(&m->work);
     plat_cond_init(&m->idle);
@@ -479,6 +489,15 @@ static void ov_ctor(Cpu *c) {
     ST64(obj + 8, U(m));
     rt_log("movie: VP9 decoder %#llx on the host (libvpx %s), output format %d", (unsigned long long)obj,
            vpx_codec_version_str(), format);
+}
+
+// Decoder(DecoderType, DecoderOutputFormat, DecoderMode, int priority).
+static void ov_ctor(Cpu *c) { construct(c, (int)arg_x(c, 3), MOVIE_FORMAT_NV12, MOVIE_CTOR); }
+
+// 3.0.1 imports this buffer-only ABI. x3 is not an argument, and its NV12 format enum is 3.
+// Keep the guest arguments intact: runtime/ov_movie.c pass forwards other codec types to this same constructor.
+static void ov_ctor_buffer(Cpu *c) {
+    construct(c, MOVIE_MODE_BUFFER, MOVIE_FORMAT_NV12_BUFFER, MOVIE_CTOR_BUFFER);
 }
 
 static void destroy(Cpu *c, uint64_t obj) {
@@ -527,8 +546,8 @@ static void ov_configure(Cpu *c) {
     Movie *m = find(obj);
     if (!m) { pass(c, MOVIE_CONFIGURE); return; }
     if (!md) { ret_x(c, ST_NULL); return; }
-    if (m->format != MOVIE_FORMAT_NV12) {
-        rt_log("movie: output format %d not implemented on the host (NV12 = 4 only)", m->format);
+    if (m->format != m->nv12_format) {
+        rt_log("movie: output format %d not implemented on the host (NV12 = %d only)", m->format, m->nv12_format);
         ret_x(c, ST_UNSUPPORTED);
         return;
     }
@@ -867,6 +886,9 @@ static void ov_get_output_md(Cpu *c) {
 }
 
 HOST_OVERRIDE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi", ov_ctor);
+HOST_OVERRIDE("_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi", ov_ctor);
+HOST_OVERRIDE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatE", ov_ctor_buffer);
+HOST_OVERRIDE("_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatE", ov_ctor_buffer);
 HOST_OVERRIDE("_ZN5movie7DecoderD2Ev", ov_d2);
 // 1.4.3's vtable and a PLT call name the complete-object destructor; without virtual bases it is D2.
 HOST_OVERRIDE("_ZN5movie7DecoderD1Ev", ov_d2);

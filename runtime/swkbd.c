@@ -4,19 +4,19 @@
 // with SDL).
 //
 // nn::swkbd::ShowKeyboard: text entry for the game. On the Switch the call starts the keyboard library applet, which
-// takes the screen until the player confirms or cancels. XC2 calls it in one place, naming a horse at a stable
-// (main+0x1ecbf64 -> main+0x1b2b3a0: UserName preset, at most 9 characters, '@' '%' '\' disabled, UTF-16 out, no
-// header, guide or initial text; an empty answer counts as not named).
+// takes the screen until the player confirms or cancels. The caller supplies the prompt, initial text and limits.
+// The main and subsdk0 modules of XC2 1.0.0 and 3.0.1 import no nn::swkbd symbol, so of the code here only
+// probe_swkbd in runtime/ov_probe.c is known to reach it.
 //
 // Front end: text_entry_run (swkbd.h), run on the guest thread that called (the call blocks, as on the Switch). The thread gives its virtual core up meanwhile, so the other guest threads keep running; it holds no
-// lock across the wait. The text starts as the game's initial text, else a default name from the catalog (ui_text.c),
-// selected, so a controller can confirm it: A = OK, B = cancel (each after it was seen released); Enter / Esc and the
+// lock across the wait. The text starts as the game's initial text, else empty. Initial text is selected so a
+// controller can confirm it: A = OK, B = cancel (each after it was seen released); Enter / Esc and the
 // buttons work too. While the window is open, and after it closes until everything is released, the game reads no
 // input (input_block). text_entry_run is the only front-end seam: an overlay (ImGui) can replace it.
 //
 // Environment:
 //   XC2_SWKBD_ANSWER=<text>|<cancel>|<initial>   answer without a window (probes, scripted runs); <initial> keeps the
-//                                                 starting text (the game's, else the default name)
+//                                                 starting text (the game's, else empty)
 //   XC2_SWKBD_TEST=ok|cancel                     open the window, then press OK / Cancel on the first timer tick
 #include <stdint.h>
 #include <stdio.h>
@@ -26,7 +26,6 @@
 #include "cfg.h"
 #include "host.h"
 #include "input.h"
-#include "ui_text.h"
 #include "swkbd.h"
 #include "platform/platform.h"
 
@@ -148,7 +147,6 @@ static void request_from(const uint8_t *arg, SwkbdRequest *r) {
         memcpy(r->initial, t, n * 2);
         r->game_initial = n > 0;
     }
-    if (!n) n = swkbd_utf8_to_utf16(ui_text(UI_SWKBD_DEFAULT_NAME), r->initial, KB_LIMIT);
     n = clean(r->initial, n, (size_t)r->max_len, r->disabled, r->numeric);
     r->initial[n] = 0;
 }
@@ -198,7 +196,7 @@ static void ov_show_keyboard(Cpu *c) {
     if (req.password) snprintf(shown, sizeof shown, "(password, %zu units, not logged)", n);
     rt_log("swkbd: from %s: \"%s\" (%d-%d units, disabled keys %#x, %s out, %s start)%s -> %s%s%s",
            ldr_describe(c->x[30] - 4, lr, sizeof lr), prompt, req.min_len, req.max_len, req.disabled,
-           utf8 ? "UTF-8" : "UTF-16", req.game_initial ? "game" : "default", forced && *forced ? " [XC2_SWKBD_ANSWER]" : "",
+           utf8 ? "UTF-8" : "UTF-16", req.game_initial ? "game" : "empty", forced && *forced ? " [XC2_SWKBD_ANSWER]" : "",
            confirmed ? "\"" : "cancelled", confirmed ? shown : "", confirmed ? "\"" : "");
     plat_mutex_unlock(&one);
     kern_core_back(&away);
