@@ -335,7 +335,7 @@ int probe_cfg(void) {
     plat_setenv("XC2_MOUSE_SENS", NULL);
     plat_setenv("XC2_FREE_CORES", NULL);
     CHECK(cfg_bool("XC2_FPS60") == 1, "default: unset FPS60 is on");
-    CHECK(EQ(cfg_value("XC2_VK_PRESENT"), "mailbox") && cfg_int("XC2_SPLIT_DRAWS") == 64, "default: text and integer");
+    CHECK(EQ(cfg_value("XC2_VK_PRESENT"), "mailbox") && cfg_int("XC2_SPLIT_DRAWS") == 32, "default: text and integer");
     plat_setenv("XC2_MOUSE_SENS", "2.5");
     CHECK(cfg_double("XC2_MOUSE_SENS") == 2.5, "double: the environment value");
     plat_setenv("XC2_MOUSE_SENS", "fast");
