@@ -96,3 +96,17 @@ game tick).
   XC2 3.0.1.
 - A release folder's deps directory (`-Setup`) has no `bin/`, so `build_game.py --deps` copies no DLLs there; a new build
   directory takes them from `build\upd`. `toolchain\deps-mingw\bin` has them.
+
+## Cloud Sea
+
+- Issue 5: a flat blue-grey band over the lower screen, flickering, when the camera pitches up at Goldmouth Return Port
+  (Argentum). The Cloud Sea shaders (vs `4091bdf5b0df81bb`, fs `595a926b53b7aa34`) place the cloud plane at c3[8].w
+  and draw the inside-the-clouds fog when it is above the camera height c3[10].y. main+0x70fd18 fills both, from +0x194
+  and +0x154 of the view object at `[[GOT main+0xb8daa0]+0x50]+0x38`.
+- The top is −8 there: written once, early in boot, by the environment blender main+0x724ff0 (two presets of the
+  area's environment data mixed by a weight). Rex's floor is −8.5, and pitching up lowers the camera to about 0.36 m
+  above it, so it sits 0.14 m under the top and crosses it as it bobs. The same at 30 and 60 fps; no translation
+  error found on the way, so this reads as the game's own behaviour (no Switch capture to compare yet).
+- `XC2_CLOUD_TOP_FIX=1` (patch set cloudtop, off by default, `recomp/patches-upd.txt`): a camera less than 1 m under
+  the top sees a top 0.125 m below itself, so the clouds stay drawn from above. Diving deeper keeps the fog.
+  Tried live at Goldmouth: no band or fog at any camera angle with it on; both come back with it off.
