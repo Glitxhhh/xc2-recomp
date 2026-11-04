@@ -22,41 +22,104 @@
 // The back end has one table of texture slots and one of sampler slots. Each pool owns the range from its base, so the
 // same id in two pools names two slots: XC2 has a texture pool of 40960 and one of 2048, and registers ids in both
 // every frame, and sampler pools of 4096 and 2048.
-static int tex_pool_slots, samp_pool_slots;
+typedef struct PoolRange { int base, n; struct PoolRange *next; } PoolRange;
+typedef struct { int end, limit; PoolRange *free; } PoolSlots;
+static PoolSlots tex_pool_slots = {.limit = 1 << 20}, samp_pool_slots = {.limit = 1 << 14};
+static PlatMutex pool_slots_lock = PLAT_MUTEX_INIT;
+
+// First-fit allocation from ranges returned by Finalize, then from the unused tail. The lock covers both tables.
+static int pool_slots_alloc(PoolSlots *s, int n) {
+    if (n < 0 || n > s->limit) return -1;
+    if (!n) return 0;
+    plat_mutex_lock(&pool_slots_lock);
+    for (PoolRange **at = &s->free; *at; at = &(*at)->next) {
+        PoolRange *r = *at;
+        if (r->n < n) continue;
+        int base = r->base;
+        r->base += n, r->n -= n;
+        if (!r->n) { *at = r->next; free(r); }
+        plat_mutex_unlock(&pool_slots_lock);
+        return base;
+    }
+    int base = -1;
+    if (n <= s->limit - s->end) { base = s->end; s->end += n; }
+    plat_mutex_unlock(&pool_slots_lock);
+    return base;
+}
+
+// A finalized pool no longer owns its descriptors. Keep free ranges ordered by base and merge neighbours so a
+// later, larger pool can reuse them. Clearing the object also makes a repeated Finalize harmless.
+static void pool_slots_free(PoolSlots *s, dpool_t *p) {
+    plat_mutex_lock(&pool_slots_lock);
+    if (p->n > 0) {
+        PoolRange **at = &s->free;
+        while (*at && (*at)->base < p->base) at = &(*at)->next;
+        PoolRange *r = malloc(sizeof *r);
+        if (!r) rt_fatal("nvn: out of memory for free descriptor ranges");
+        *r = (PoolRange){p->base, p->n, *at};
+        *at = r;
+        for (r = s->free; r; r = r->next) {
+            while (r->next && r->base + r->n == r->next->base) {
+                PoolRange *next = r->next;
+                r->n += next->n;
+                r->next = next->next;
+                free(next);
+            }
+        }
+        at = &s->free;
+        while (*at && (*at)->base + (*at)->n != s->end) at = &(*at)->next;
+        if (*at) { r = *at; s->end = r->base; *at = r->next; free(r); }
+    }
+    *p = (dpool_t){0};
+    plat_mutex_unlock(&pool_slots_lock);
+}
+
+static int pool_slot(const dpool_t *p, int id) {
+    if (id < 0 || id >= p->n) {
+        static int32_t bad;
+        if (__atomic_fetch_add(&bad, 1, __ATOMIC_RELAXED) < 16)
+            rt_log("nvn: descriptor id %d outside pool of %d slots at %d: registration skipped", id, p->n, p->base);
+        return -1;
+    }
+    return p->base + id;
+}
 
 // NVNboolean nvnTexturePoolInitialize(NVNtexturePool *tp, const NVNmemoryPool *p, ptrdiff_t offset, int n)
 NVN_API(nvnTexturePoolInitialize) {
-    int n = (int)arg_x(c, 3), base = __atomic_fetch_add(&tex_pool_slots, n, __ATOMIC_RELAXED);
-    if (n < 0 || base + n > 1 << 20) rt_fatal("nvn: texture pools exceed the slot table: %d at %d", n, base);
+    int n = (int)arg_x(c, 3), base = pool_slots_alloc(&tex_pool_slots, n);
+    if (base < 0) { ret_x(c, 0); return; }
     *(dpool_t *)arg_p(c, 0) = (dpool_t){arg_p(c, 1), (int64_t)arg_x(c, 2), n, base};
     NVN_LOG("TexturePool n=%d", (int)arg_x(c, 3));
     ret_x(c, 1);
 }
 // void nvnTexturePoolFinalize(NVNtexturePool *tp)
-NVN_API(nvnTexturePoolFinalize) { (void)c; }
+NVN_API(nvnTexturePoolFinalize) { pool_slots_free(&tex_pool_slots, arg_p(c, 0)); }
 // void nvnTexturePoolRegisterTexture(const NVNtexturePool *tp, int id, const NVNtexture *t, const NVNtextureView *v)
 NVN_API(nvnTexturePoolRegisterTexture) {
-    gfx_backend()->texture_register(((const dpool_t *)arg_p(c, 0))->base + (int)arg_x(c, 1), arg_p(c, 2), arg_p(c, 3));
+    int slot = pool_slot(arg_p(c, 0), (int)arg_x(c, 1));
+    if (slot >= 0) gfx_backend()->texture_register(slot, arg_p(c, 2), arg_p(c, 3));
 }
 // void nvnTexturePoolRegisterImage(const NVNtexturePool *tp, int id, const NVNtexture *t, const NVNtextureView *v)
 // An image handle is a texture pool index here (nvn_api_cmd.c, BindImage), so the
 // slot takes the same registration as a sampled texture.
 NVN_API(nvnTexturePoolRegisterImage) {
-    gfx_backend()->texture_register(((const dpool_t *)arg_p(c, 0))->base + (int)arg_x(c, 1), arg_p(c, 2), arg_p(c, 3));
+    int slot = pool_slot(arg_p(c, 0), (int)arg_x(c, 1));
+    if (slot >= 0) gfx_backend()->texture_register(slot, arg_p(c, 2), arg_p(c, 3));
 }
 // NVNboolean nvnSamplerPoolInitialize(NVNsamplerPool *sp, const NVNmemoryPool *p, ptrdiff_t offset, int n)
 NVN_API(nvnSamplerPoolInitialize) {
-    int n = (int)arg_x(c, 3), base = __atomic_fetch_add(&samp_pool_slots, n, __ATOMIC_RELAXED);
-    if (n < 0 || base + n > 1 << 14) rt_fatal("nvn: sampler pools exceed the slot table: %d at %d", n, base);
+    int n = (int)arg_x(c, 3), base = pool_slots_alloc(&samp_pool_slots, n);
+    if (base < 0) { ret_x(c, 0); return; }
     *(dpool_t *)arg_p(c, 0) = (dpool_t){arg_p(c, 1), (int64_t)arg_x(c, 2), n, base};
     NVN_LOG("SamplerPool n=%d", (int)arg_x(c, 3));
     ret_x(c, 1);
 }
 // void nvnSamplerPoolFinalize(NVNsamplerPool *sp)
-NVN_API(nvnSamplerPoolFinalize) { (void)c; }
+NVN_API(nvnSamplerPoolFinalize) { pool_slots_free(&samp_pool_slots, arg_p(c, 0)); }
 // void nvnSamplerPoolRegisterSampler(const NVNsamplerPool *sp, int id, const NVNsampler *s)
 NVN_API(nvnSamplerPoolRegisterSampler) {
-    gfx_backend()->sampler_register(((const dpool_t *)arg_p(c, 0))->base + (int)arg_x(c, 1), &((const samp_t *)arg_p(c, 2))->p);
+    int slot = pool_slot(arg_p(c, 0), (int)arg_x(c, 1));
+    if (slot >= 0) gfx_backend()->sampler_register(slot, &((const samp_t *)arg_p(c, 2))->p);
 }
 
 // ---------- Texture builder
