@@ -40,7 +40,8 @@ build\upd\xc2.exe
 `build\xlate\xc2_xlate.exe` is XC3's translator build copied over (same sources) with `tools\build_xlate.py --id-only`.
 
 Test runs: `XC2_ASSUME_FOCUS=1 XC2_BACKGROUND_WINDOW=1`, `--boot`, `XC2_INPUT_SCRIPT=<file>`, `--seconds N --shot x.png`,
-`XC2_SHOTS=<from>-<to>:<step>`, `XC2_DUMP=<frame>`.
+`XC2_SHOTS=<from>-<to>:<step>`, `XC2_DUMP=<frame>` (`XC2_DUMP=t<tick>`: the frame where a scripted run reaches that
+game tick).
 
 ## Known gaps
 

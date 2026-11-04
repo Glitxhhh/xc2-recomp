@@ -1,5 +1,7 @@
 // XC2_DUMP=<frame>: a frame dump for the Vulkan back end, which RenderDoc cannot capture (it hides
-// VK_EXT_external_memory_host). Between presents frame-1 and frame, the replay's command buffers also copy, after each
+// VK_EXT_external_memory_host). XC2_DUMP=t<tick> dumps the frame after the first present at or past that game tick
+// (frame_step_ticks, the clock XC2_INPUT_SCRIPT lines count), so a dump lands at the same point of a scripted run
+// however long its loads took. Between presents frame-1 and frame, the replay's command buffers also copy, after each
 // render pass, its colour and depth targets and, after each dispatch, the storage images it writes into host buffers;
 // the completion thread turns them into 8-bit PNGs once the submission is done. 3D textures (LUTs, volumes) sampled or
 // written in the frame are copied once each, slices side by side. Files in XC2_DUMP_DIR (default "dump"):
@@ -49,6 +51,7 @@
 
 int vk_dump_armed;
 static uint64_t dump_frame, log_from;   // log_from: XC2_DUMP_LOG, first frame logged to passes.txt without images
+static uint64_t dump_tick;              // XC2_DUMP=t<tick>: dump_frame is set once the game clock reaches it
 static char dir[400];
 static FILE *passes_f, *images_f;
 static int seq, finished, copied;      // copied: passes and dispatches of the dump frame whose images were copied
@@ -920,7 +923,10 @@ static void make_dirs(char *path) { plat_file_mkdir_p(path); }
 
 void vk_dump_init(void) {
     const char *e = cfg_get("XC2_DUMP");
-    if (!e || !*e || !(dump_frame = strtoull(e, NULL, 10))) return;
+    if (e && e[0] == 't') {   // by game tick: the frame is chosen at the present that reaches the tick
+        if (!(dump_tick = strtoull(e + 1, NULL, 10))) return;
+        dump_frame = UINT64_MAX;
+    } else if (!e || !*e || !(dump_frame = strtoull(e, NULL, 10))) return;
     const char *lf = cfg_get("XC2_DUMP_LOG");
     if (lf && *lf) log_from = strtoull(lf, NULL, 10);
     const char *sr = cfg_get("XC2_DUMP_SKIP_RUNS");
@@ -958,10 +964,17 @@ void vk_dump_init(void) {
         if (bd_size && !(bufs_f = fopen(path, "w"))) bd_size = 0;
     }
     vk_dump_armed = 1;
-    rt_log("vk_dump: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
+    if (dump_tick) rt_log("vk_dump: the frame after game tick %llu goes to %s", (unsigned long long)dump_tick, dir);
+    else rt_log("vk_dump: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
 }
 
 void vk_dump_present(uint64_t frame) {
+    if (dump_tick && frame_step_ticks() >= dump_tick) {
+        dump_tick = 0;
+        __atomic_store_n(&dump_frame, frame + 1, __ATOMIC_RELEASE);
+        rt_log("vk_dump: game tick reached at present %llu: dumping frame %llu", (unsigned long long)frame,
+               (unsigned long long)frame + 1);
+    }
     if (frame != dump_frame) return;
     plat_mutex_lock(&rec_lock);
     finished = 1;
