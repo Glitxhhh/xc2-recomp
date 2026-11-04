@@ -129,6 +129,10 @@
 # Picture shape when the window's differs from the game resolution's (a 16:9 game on a 16:10 screen): keep (its
 # proportions, with black bars) or stretch (over the whole window). Changes take effect at once.
 # picture_fit = keep
+# The game's own anti-aliasing pass and dynamic resolution: 1 turns both off and draws the handheld mode's scene at full
+# size instead of 75 % (lib_nx.ini, tools/libnx_sharp.py): much sharper in handheld mode, little change docked, a few
+# more jagged edges. Takes effect after a restart.
+# game_sharp = 0
 # Cloud Sea fog near the cloud top: 1 (default) keeps a low camera from dipping into the "inside the clouds" fog when
 # it is less than 1 m under the top. Where the floor sits just under it (Goldmouth Return Port's dock), tilting the
 # camera up otherwise covers the lower screen with flat blue-grey fog, or the whole screen. 0 is the game's own look.

@@ -72,6 +72,7 @@ import sys
 import time
 from pathlib import Path
 
+import libnx_sharp
 import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
@@ -838,6 +839,8 @@ def main():
     if (paths['romfs'] / 'index.json').is_file():
         count, size, dt = romfs_index.write(paths['romfs'], out)
         print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')
+        why = libnx_sharp.write(paths['romfs'], out)   # served with XC2_GAME_SHARP=1 (runtime/romfs.c)
+        print(f'lib_nx.ini: {why}; the game sharpness option is off' if why else 'lib_nx.ini: sharper copy written')
     else:
         romfs_index.write_placeholder(out)
         print(f'build_game: warning: no {paths["romfs"] / "index.json"}; {EXE} will have no RomFS', file=sys.stderr)

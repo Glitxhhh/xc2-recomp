@@ -357,6 +357,42 @@ static void heapdef_overlay(void) {
     res_heapdef_served();
 }
 
+// XC2_GAME_SHARP=1: the game's own anti-aliasing and dynamic resolution off. tools/libnx_sharp.py wrote
+// libnx-sharp.bin next to romfs-index.bin, an edited copy of the xbc1 block holding monolib/shader/lib_nx.ini inside
+// bf2.ard (same place and size); reads of bf2.ard from the image get those bytes over the original's. The copy is used
+// only when its header matches the image's block, so another game version keeps its own.
+#define SHARP_FILE "libnx-sharp.bin"
+#define SHARP_BLOCK 0x28205d430ull   // in bf2.ard (3.0.1)
+#define SHARP_HEADER 0x30
+static uint8_t *sharp;               // the replacement block, NULL when off
+static uint64_t sharp_at, sharp_n;   // its offset in the image and its size
+
+static void sharp_init(void) {
+    if (!cfg_bool("XC2_GAME_SHARP")) return;
+    char path[2200];
+    need(snprintf(path, sizeof path, "%s/%s", index_dir, SHARP_FILE) < (int)sizeof path, "sharpness path");
+    uint64_t i = lower("bf2.ard"), n = 0;
+    uint8_t *data = plat_file_read(path, &n), head[SHARP_HEADER];
+    Entry e = i < file_count && !strcmp(entry_name(entry(i)), "bf2.ard") ? entry(i) : (Entry){0};
+    int ok = data && n > SHARP_HEADER && e.size >= SHARP_BLOCK + n &&
+             read_at(image, head, SHARP_HEADER, e.offset + SHARP_BLOCK) == SHARP_HEADER && !memcmp(head, data, SHARP_HEADER);
+    if (!ok) {
+        free(data);
+        rt_log("RomFS: XC2_GAME_SHARP=1, but %s is %s; the game keeps its own anti-aliasing", path,
+               data ? "not this game's lib_nx.ini block" : "missing");
+        return;
+    }
+    sharp = data, sharp_at = e.offset + SHARP_BLOCK, sharp_n = n;
+    rt_log("RomFS: lib_nx.ini from %s (the game's anti-aliasing and dynamic resolution off)", path);
+}
+
+// Lays the replacement block over the part of a read from the image at image offset at that it covers.
+static void sharp_apply(uint8_t *buf, uint64_t at, uint64_t n) {
+    if (!sharp || at >= sharp_at + sharp_n || at + n <= sharp_at) return;
+    uint64_t from = at > sharp_at ? at : sharp_at, to = at + n < sharp_at + sharp_n ? at + n : sharp_at + sharp_n;
+    memcpy(buf + (from - at), sharp + (from - sharp_at), (size_t)(to - from));
+}
+
 static void overlay_init(void) {
     // XC2_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py)
     char def[2100];
@@ -370,6 +406,7 @@ static void overlay_init(void) {
     for (int i = 0; i < 2; i++)
         if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i]);
     heapdef_overlay();
+    sharp_init();
     added_init();
     if (noverlay) qsort(overlays, noverlay, sizeof *overlays, overlay_order);
     for (size_t k = 1; k < noverlay; k++)
@@ -594,6 +631,7 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
         if (r <= 0) rt_fatal("RomFS read failure at %#llx", (unsigned long long)(base + offset + done));
         done += (uint64_t)r;
     }
+    if (f == image) sharp_apply(buffer, base + (uint64_t)offset, done);
     *out = done;
     return 0;
 }
