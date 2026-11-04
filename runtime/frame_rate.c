@@ -129,12 +129,13 @@ static void xc2_delta_store(void) {
 
 int frame_rate_paced(void) { return xc2_words != NULL; }
 
-// Cutscenes and pre-rendered movies run at 30 fps, as the console runs them: their text and animation advance per frame (a movie's subtitles ran
-// ahead of the picture at 120 fps). A movie is a live host decoder (ov_movie.c movie_playing). The game's event state, a 32-bit field at
-// main+0x1fefaf4 (+0xcc of the object at main+0x1fefa28, getter main+0xcc5a0), is 0 in normal play and 2 or more
-// while a cutscene plays, as the 1.0.1 60FPS mod's cheat reads it (1.0.1 main+0x1ffeaf4). XC2_CUTSCENE_30=0 keeps the
-// limit in cutscenes; XC2_CUTSCENE_30=mixed keeps it in state 3 and runs 30 fps in state 4 and in movies only, as the
-// mod's "60-30FPS Cutscenes" variant (its cheat: state 3 one vsync per frame, state 4 two).
+// Cutscenes and pre-rendered movies run at 30 fps, as the console runs them: event scenes advance per frame, so at
+// the limit they played at double speed. A movie is a live host decoder (ov_movie.c movie_playing). The event state
+// is a 32-bit field at main+0xbd5380 (3.0.1; +0x10 of the object at main+0xbd5370, written by 17 sites in the event
+// code): 0 in play, nonzero on the title screen and while an event scene plays, and 0 again when one is skipped. The
+// 2.0.2 and 2.1.0 "60 FPS + Cutscenes Speed Fix" cheat reads it at main+0xbd4380 (3.0.1 moved that bss by 0x1000;
+// the same 17 sites write it) to put the interval back to 2 and the step to 1/30. XC2_CUTSCENE_30=0 keeps the limit
+// in cutscenes; XC2_CUTSCENE_30=mixed keeps it in event scenes and runs 30 fps in movies only.
 static int xc2_cutscene(void) {
     static int mode = -1;   // 0 off, 1 every cutscene, 2 mixed
     if (mode < 0) {
@@ -142,8 +143,12 @@ static int xc2_cutscene(void) {
         mode = !e ? 1 : !strcmp(e, "mixed") ? 2 : strcmp(e, "0") != 0;
     }
     if (!mode) return 0;
-    // XC2: only movies so far; its event state (XCX's main+0x1fefaf4 above) is not found yet
-    return movie_playing();
+    if (movie_playing()) return 1;
+    uint32_t state;
+    if (!plat_mem_read(MOD_MAIN_BASE + 0xbd5380, &state, 4)) return 0;
+    static uint32_t last = 0;
+    if (state != last) rt_log("frame rate: event state %u -> %u", last, state), last = state;
+    return mode == 1 && state != 0;
 }
 
 void frame_step_init(void) {
