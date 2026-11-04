@@ -1,0 +1,60 @@
+# Runs tests/run.py, the checks that need no game files, on every push and pull request. Linux runs the whole set:
+# clang for the C-compiled checks, the lifter environment's wheels for the differential tests against Unicorn, Xvfb
+# for the installer window. Windows, the installer's target, runs the pure-Python set, which is also the only host
+# where tests/worktree_test.py's junction checks run. Both jobs are the local steps of tests/run.py's docstring.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes a run still going.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      # The lifter environment: Python 3.12 with tools/requirements.txt (unicorn, capstone and lz4 among them).
+      - uses: actions/setup-python@v7
+        id: py312
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r tools/requirements.txt
+      # The extraction environment: Python 3.14, whose tkinter the installer window test needs.
+      - uses: actions/setup-python@v7
+        id: py314
+        with:
+          python-version: "3.14"
+      - run: sudo apt-get install -y clang lld
+      - run: >-
+          python tests/run.py
+          --lifter-python ${{ steps.py312.outputs.python-path }}
+          --tools-python ${{ steps.py314.outputs.python-path }}
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        id: py312
+        with:
+          python-version: "3.12"
+      # Of the pure-Python checks only tests/spin_waits_test.py needs wheels, at the versions of tools/requirements.txt.
+      - run: python -m pip install capstone==5.0.9 lz4==4.4.5
+      - uses: actions/setup-python@v7
+        id: py314
+        with:
+          python-version: "3.14"
+      - run: >-
+          python tests/run.py --skip-native
+          --lifter-python ${{ steps.py312.outputs.python-path }}
+          --tools-python ${{ steps.py314.outputs.python-path }}
