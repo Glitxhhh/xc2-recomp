@@ -46,7 +46,8 @@ both folders from the release's pinned downloads (`tools/make_release.py` `PINS`
 still builds from an unpacked TotK or XC2 Recomp release folder. The build used to borrow `..\..\totk-pc-recomp` and broke when that folder was reset.
 
 Test runs: `XC2_ASSUME_FOCUS=1 XC2_BACKGROUND_WINDOW=1`, `--boot`, `XC2_INPUT_SCRIPT=<file>`, `--seconds N --shot x.png`,
-`XC2_SHOTS=<from>-<to>:<step>`, `XC2_DUMP=<frame>`.
+`XC2_SHOTS=<from>-<to>:<step>`, `XC2_DUMP=<frame>` (`XC2_DUMP=t<tick>`: the frame where a scripted run reaches that
+game tick).
 
 ## Known gaps
 
