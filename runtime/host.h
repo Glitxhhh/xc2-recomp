@@ -15,6 +15,10 @@
 #include "cpu.h"
 #include "dispatch.h"
 
+// The title id of Xenoblade Chronicles 2: what svcGetInfo reports as the program id (svc.c) and the application whose
+// save data this host holds (fs_host.c save_exists). tools/extract_xc2.py APP_ID holds the same value.
+#define XC2_APPLICATION_ID 0x0100E95004038000ull
+
 // ---- logging and results
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));   // "[host] <msg>\n" to the log, one write
 // The log is stderr plus, in a game run whose stderr is not a file, logs\xc2.log next to xc2.exe (main.c log_open).
