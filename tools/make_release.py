@@ -155,6 +155,10 @@ def unpack(name, member_filter=None):
     if path.suffix == '.zip':
         with zipfile.ZipFile(path) as z:
             z.extractall(dest)
+    elif path.suffix == '.zst' and sys.version_info < (3, 14):   # tarfile reads zstd from 3.14; before, zstandard does
+        import zstandard
+        with open(path, 'rb') as f, zstandard.ZstdDecompressor().stream_reader(f) as z, tarfile.open(fileobj=z, mode='r|') as t:
+            t.extractall(dest, filter='data')
     else:
         with tarfile.open(path) as t:
             t.extractall(dest, filter='data')
@@ -280,23 +284,23 @@ def build_python(out):
 
 # ---- llvm/ ---------------------------------------------------------------------------------------------------------
 
+def llvm_skip(rel):
+    """copy_tree's filter for llvm-mingw: True for what compiling and linking xc2.exe does not need."""
+    top = rel.split('/')[0]
+    if top in LLVM_SKIP_DIRS:
+        return True
+    if top == 'bin':
+        return rel not in {f'bin/{n}' for n in LLVM_BIN}
+    if top == 'lib':   # lib/clang/<major>/include and the x86_64 Windows builtins; no sanitizers, no other targets
+        if rel.startswith('lib/clang/') and '/include/' in rel:
+            return False
+        return not rel.endswith('/lib/windows/libclang_rt.builtins-x86_64.a')
+    return Path(rel).suffix.lower() in LLVM_SKIP_SUFFIXES or rel.startswith('include/ddk/')
+
+
 def build_llvm(out):
-    src = unpack('llvm-mingw') / f'llvm-mingw-{LLVM_VERSION}-ucrt-x86_64'
     dst = out / 'llvm'
-
-    def skip(rel):
-        top = rel.split('/')[0]
-        if top in LLVM_SKIP_DIRS:
-            return True
-        if top == 'bin':
-            return rel not in {f'bin/{n}' for n in LLVM_BIN}
-        if top == 'lib':   # lib/clang/<major>/include and the x86_64 Windows builtins; no sanitizers, no other targets
-            if rel.startswith('lib/clang/') and '/include/' in rel:
-                return False
-            return not rel.endswith('/lib/windows/libclang_rt.builtins-x86_64.a')
-        return Path(rel).suffix.lower() in LLVM_SKIP_SUFFIXES or rel.startswith('include/ddk/')
-
-    copy_tree(src, dst, skip)
+    copy_tree(unpack('llvm-mingw') / f'llvm-mingw-{LLVM_VERSION}-ucrt-x86_64', dst, llvm_skip)
     return dst
 
 
@@ -318,7 +322,11 @@ def build_bin(out):
 
 def build_deps(out):
     """runtime/deps: the headers and import libraries build_game.py --deps expects (include/, lib/)."""
-    d = out / 'runtime' / 'deps'
+    fill_deps(out / 'runtime' / 'deps')
+
+
+def fill_deps(d):
+    """include/ and lib/ of a build_game.py --deps directory: SDL3, Opus, libvpx, Vulkan, VMA and zstd."""
     (d / 'include').mkdir(parents=True, exist_ok=True)
     (d / 'lib').mkdir(parents=True, exist_ok=True)
     sdl = unpack('sdl3-devel') / f'SDL3-{SDL_VERSION}' / 'x86_64-w64-mingw32'
