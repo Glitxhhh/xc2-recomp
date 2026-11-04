@@ -180,6 +180,11 @@ Before a commit:
   `git config core.hooksPath .githooks` runs it before each local commit and refuses pushes to `master` or `main`.
 - `build\<ver>\xc2.exe --selftest`: layout, dispatch table and host-function registry, without game files.
 
+`python tests\run.py` runs every check that needs no game files and prints one line per check (`--list` names them,
+`--skip-native` leaves out the ones that compile C); CI runs it on Linux and Windows on every push and pull request
+(`.github/workflows/tests.yml`). `tests\excl_mt.py` and `tools\check_platform.py` run there without blocking: the first
+fails its ABA cases, the second still finds Win32 calls in `runtime/kernel.c` and `runtime/main.c`.
+
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`, with one known gap in `excl_mt.py` (below the table):
 
