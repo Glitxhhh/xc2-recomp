@@ -14,6 +14,13 @@ first (rpath $ORIGIN). docs/building.md lists the packages.
     .venv\\Scripts\\python tools\\build_game.py --out build/v121-t2   # a separate build directory
     .venv\\Scripts\\python tools\\build_game.py --toolchain toolchain/llvm-mingw-<version>/llvm-mingw-<version>-ucrt-x86_64 \\
         --out build/v121-llvmmingw                                    # llvm-mingw instead of MSYS2 UCRT64
+    .venv/bin/python tools/build_game.py --target windows --toolchain toolchain/llvm-mingw-<version>/llvm-mingw-<version>-ucrt-ubuntu-22.04-x86_64 \\
+        --ninja toolchain/ninja-linux/ninja --out build/v121-cross    # xc2.exe built on Linux (below)
+
+--target windows on a Linux host is the --toolchain build above with a Linux-hosted llvm-mingw tree (tools/make_release.py
+--cross-tools downloads it with Ninja and toolchain/deps-mingw): the same runtime files, flags, libraries and DLLs, clang
+called as bin/x86_64-w64-mingw32-clang and windres as bin/x86_64-w64-mingw32-windres. The result is a Windows
+build/<out>/xc2.exe with the DLLs beside it; it cannot run on the build host. --target defaults to the host's OS.
 
 Every runtime/*.c is compiled. build/<version>/modules.c carries the layout, the linked function tables, the
 expected SHA-256 of each ExeFS file (tools/data/expected-<display version>.json) and the default game paths
@@ -69,15 +76,17 @@ import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
 
-WIN = os.name == 'nt'
+WIN = os.name == 'nt'   # the host: where MSYS2 lives, whether tools end in .exe, how memory is measured
 if not WIN:
     import resource
+# The target: whether the executable is a Windows one (xc2.exe, the Win32 runtime files, PE sections). It is the host's
+# OS until main() sees --target windows on a Linux host, which builds with a Linux-hosted llvm-mingw tree.
+TARGET_WIN = WIN
 ROOT = Path(__file__).resolve().parent.parent
 # In a git worktree (tools/worktree.py) build/ and generated/ are junctions into the main checkout, and resolve() follows
 # them. MAIN_ROOT is where they land, so resolved paths still print and compare relative to a root.
 MAIN_ROOT = (ROOT / 'build').resolve().parent
 UCRT = Path(r'C:\msys64\ucrt64\bin')
-EXE = 'xc2.exe' if WIN else 'xc2'
 
 
 def on_path(name):
@@ -94,17 +103,25 @@ SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll']
 GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
              '-march=x86-64-v3']
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
-if WIN:
-    LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '"-Wl,--Map=$builddir/xc2.map"']   # the map feeds tools/prof_report.py
-    LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-lwinmm', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
-    VMA_INCLUDE = UCRT.parent / 'include' / 'vma'   # vk_mem_alloc.h; MSYS2 package vulkan-memory-allocator
-else:
+
+
+def target_settings(win):
+    """(EXE, LINK_FLAGS, LINK_LIBS, VMA_INCLUDE) of a Windows target (win) or a Linux one."""
+    if win:
+        link_flags = ['-fuse-ld=lld', '-Wl,--stack,16777216', '"-Wl,--Map=$builddir/xc2.map"']   # the map feeds tools/prof_report.py
+        link_libs = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-lwinmm', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
+        vma = UCRT.parent / 'include' / 'vma'   # vk_mem_alloc.h; MSYS2 package vulkan-memory-allocator
+        return 'xc2.exe', link_flags, link_libs, vma
     # -no-pie: the lifted modules' function tables (hundreds of thousands of pointers) need no load-time relocation.
     # $ORIGIN: a libSDL3.so.0 next to xc2 comes before the system's (the release's portable folder).
-    LINK_FLAGS = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', "'-Wl,-rpath,$$ORIGIN'",
+    link_flags = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', "'-Wl,-rpath,$$ORIGIN'",
                   '"-Wl,-Map=$builddir/xc2.map"']
-    LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
-    VMA_INCLUDE = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
+    link_libs = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
+    vma = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
+    return 'xc2', link_flags, link_libs, vma
+
+
+EXE, LINK_FLAGS, LINK_LIBS, VMA_INCLUDE = target_settings(TARGET_WIN)
 # Without a system vk_mem_alloc.h, the header the Windows release pins (tools/make_release.py, VMA 3.4.0) is fetched once
 # into toolchain/vma: one MIT header (THIRD_PARTY_NOTICES.md), checked against its hash.
 VMA_FETCH = ('https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/v3.4.0/include/vk_mem_alloc.h',
@@ -249,7 +266,7 @@ def other_os(name):
     """A runtime file for another OS: Win32 ones (*_win.*, platform/win32.c, xc2.rc) off Windows, the SDL window's
     (*_sdl.*) and platform/linux.c on Windows."""
     stem = name.rsplit('.', 1)[0]
-    if WIN:
+    if TARGET_WIN:
         return stem.endswith('_sdl') or name == 'linux.c'
     return stem.endswith('_win') or name in ('win32.c', 'xc2.rc')
 
@@ -316,7 +333,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
     rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
-    libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
+    libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if TARGET_WIN else LINK_LIBS) if DEPS else LINK_LIBS
     lines = [
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',
@@ -719,9 +736,13 @@ def main():
     ap.add_argument('--profile', type=Path, help="xc2.exe's default profile directory (default build/profile for v121, "
                                                  "build/profile-<version> otherwise, so trying another version leaves "
                                                  "the main profile alone; saves load on 1.2.1 and 1.4.3 alike)")
+    ap.add_argument('--target', choices=('windows', 'linux'), default='windows' if WIN else 'linux',
+                    help='the OS the executable runs on (default: this one); windows on a Linux host is a cross build '
+                         'with the llvm-mingw tree of --toolchain and the libraries of --deps')
     ap.add_argument('--toolchain', type=Path, help='llvm-mingw directory (with bin/clang.exe) to build with instead of '
                                                    'MSYS2 UCRT64 clang; on Linux an LLVM directory (bin/clang, '
-                                                   'bin/llvm-ar) instead of the clang on PATH')
+                                                   'bin/llvm-ar) instead of the clang on PATH, or with --target '
+                                                   'windows a Linux-hosted llvm-mingw directory')
     ap.add_argument('--ninja', type=Path, help='ninja.exe to build with (default: MSYS2 UCRT64, else bin/ninja.exe of the '
                                                'release folder)')
     ap.add_argument('--sysroot', type=Path, help='Linux: the glibc headers and libraries to compile and link against '
@@ -749,7 +770,16 @@ def main():
             sys.exit(f'no expected hashes known for {args.version}; pass --expected')
         expected = ROOT / 'tools' / 'data' / f'expected-v{DISPLAY_VERSIONS[args.version]}.json'
     hashes = json.loads(Path(expected).read_text())['exefs_sha256']
-    global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS
+    global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS, TARGET_WIN, EXE, LINK_FLAGS, LINK_LIBS, VMA_INCLUDE
+    cross = args.target == 'windows' and not WIN
+    if args.target == 'linux' and WIN:
+        sys.exit('--target linux: a Windows host builds Windows executables only')
+    if cross:
+        if not args.toolchain:
+            sys.exit('--target windows on Linux needs --toolchain <Linux-hosted llvm-mingw directory> '
+                     '(docs/building.md, "Windows build from Linux")')
+        TARGET_WIN = True
+        EXE, LINK_FLAGS, LINK_LIBS, VMA_INCLUDE = target_settings(True)
     if args.ninja:
         NINJA = args.ninja.resolve()
     elif not NINJA.is_file() and (ROOT / 'bin' / ('ninja' + ('.exe' if WIN else ''))).is_file():
@@ -761,15 +791,22 @@ def main():
         CLANG = TOOLCHAIN_BIN / f'clang{suffix}'
         AR = TOOLCHAIN_BIN / f'llvm-ar{suffix}'
         WINDRES = TOOLCHAIN_BIN / 'llvm-windres.exe'
-    if args.toolchain and WIN or args.deps and (args.toolchain or not WIN):   # Linux: --deps only, never deps-mingw
+        if cross:
+            # llvm-mingw's Linux-hosted clang targets Linux when called as clang. Called through its
+            # x86_64-w64-mingw32-clang wrapper it reads bin/x86_64-w64-windows-gnu.cfg, which is what bin/clang.exe of
+            # the Windows release does by default: the mingw-w64 target, libc++, compiler-rt and lld. The windres wrapper
+            # names the same target and preprocesses with that clang.
+            CLANG = TOOLCHAIN_BIN / 'x86_64-w64-mingw32-clang'
+            WINDRES = TOOLCHAIN_BIN / 'x86_64-w64-mingw32-windres'
+    if args.toolchain and TARGET_WIN or args.deps and (args.toolchain or not TARGET_WIN):   # Linux: --deps only, never deps-mingw
         DEPS = (args.deps or DEFAULT_DEPS).resolve()
-        dlls = sorted((DEPS / 'bin').glob('*.dll')) if WIN else []
-    if DEPS and not WIN:
+        dlls = sorted((DEPS / 'bin').glob('*.dll')) if TARGET_WIN else []
+    if DEPS and not TARGET_WIN:
         # A release (--deps): Opus, libvpx and zstd go into the executable, so it needs no more than libc, Vulkan and
         # the libSDL3.so.0 beside it
         for lib in ('opus', 'vpx', 'zstd'):
             LINK_LIBS[LINK_LIBS.index(f'-l{lib}')] = f'-l:lib{lib}.a'
-    if args.sysroot and not WIN:
+    if args.sysroot and not TARGET_WIN:
         # Every compile and the link: the game then needs no newer glibc than the sysroot's (the Steam Runtime's)
         sysroot = ['--target=x86_64-linux-gnu', f'--sysroot={cmd_path(args.sysroot.resolve())}']
         GEN_FLAGS[:0] = sysroot
@@ -869,7 +906,7 @@ def main():
         return
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to xc2.exe
         shutil.copy2(dll, exe.parent / dll.name)
-    sections, image = pe_sections(exe) if WIN else elf_sections(exe)
+    sections, image = pe_sections(exe) if TARGET_WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))
     if image > 3 * GiB // 2:

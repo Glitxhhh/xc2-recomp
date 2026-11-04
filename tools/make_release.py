@@ -3,6 +3,7 @@
     .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/XC2-Setup [--zip build/release/XC2-Setup-<version>-windows.zip]
     .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/XC2-Setup --from <unpacked XCX-Setup release>
     .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/XC2-Setup --prove
+    .venv-py314/bin/python tools/make_release.py --cross-tools   # Linux: the tools of build_game.py --target windows
 
 Needs Python 3.14 (tarfile reads the MSYS2 .zst packages), uv on PATH and network access on the first run. Downloads are
 cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismatch stops the build. The folder holds:
@@ -75,6 +76,13 @@ PINS = {
                    '049b9dd711e3fb3f8d84feb998dfec54a75e17cf539c4a80ff4d058d839771cf'),
     'ninja': ('https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip',
               '07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65'),
+    # The same llvm-mingw release and Ninja for a Linux host: build_game.py --target windows (--cross-tools below) and
+    # the Linux release's bin/ninja (tools/make_release_linux.py).
+    'llvm-mingw-linux': (f'https://github.com/mstorsjo/llvm-mingw/releases/download/{LLVM_VERSION}/'
+                         f'llvm-mingw-{LLVM_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz',
+                         '55064b60b991a1e1e8090b8c2f84e82b22cfe5903d12c159d65064cf5e8ae335'),
+    'ninja-linux': ('https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux.zip',
+                    '5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6'),
     'opus': (MSYS2 + 'mingw-w64-ucrt-x86_64-opus-1.6.1-2-any.pkg.tar.zst',
              'bb114bcf26225f50f874497ebfd6b8224fff2a20bda3f8ee45cd07ce5f02657b'),
     'libvpx': (MSYS2 + 'mingw-w64-ucrt-x86_64-libvpx-1.17.0-1-any.pkg.tar.zst',
@@ -143,9 +151,9 @@ def fetch(name):
     return path
 
 
-def unpack(name, member_filter=None):
-    """Extract a pinned archive into toolchain/release-work/<name> (once) and return that directory."""
-    dest = WORK / name
+def unpack(name, member_filter=None, dest=None):
+    """Extract a pinned archive into toolchain/release-work/<name>, or dest, (once) and return that directory."""
+    dest = dest or WORK / name
     stamp = dest / '.unpacked'
     if stamp.is_file():
         return dest
@@ -344,6 +352,34 @@ def fill_deps(d):
     for name in ('zstd.h', 'zstd_errors.h'):
         shutil.copy2(zstd / 'include' / name, d / 'include')
     shutil.copy2(zstd / 'lib' / 'libzstd.a', d / 'lib')
+
+
+def cross_tools():
+    """What tools/build_game.py --target windows needs on a Linux host, in toolchain/ of the main checkout
+    (docs/building.md, "Windows build from Linux"): the Linux-hosted llvm-mingw as
+    llvm-mingw-<version>/llvm-mingw-<version>-ucrt-ubuntu-22.04-x86_64 (the layout of the Windows zip), Ninja as
+    ninja-linux/ninja, and deps-mingw with the include/ and lib/ of a release's runtime/deps plus bin/ with SDL3.dll and
+    libopus-0.dll, the DLLs build_game.py copies next to xc2.exe (a release takes them from bin/, build_bin)."""
+    tc = MAIN_ROOT / 'toolchain'
+    llvm = unpack('llvm-mingw-linux', dest=tc / f'llvm-mingw-{LLVM_VERSION}') / f'llvm-mingw-{LLVM_VERSION}-ucrt-ubuntu-22.04-x86_64'
+    ninja = tc / 'ninja-linux' / 'ninja'
+    ninja.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(unpack('ninja-linux') / 'ninja', ninja)
+    ninja.chmod(0o755)
+    deps = tc / 'deps-mingw'
+    fill_deps(deps)
+    (deps / 'bin').mkdir(exist_ok=True)
+    dll = unpack('sdl3-dll') / 'SDL3.dll'
+    if sha256_file(dll) != SDL3_DLL_SHA256:
+        sys.exit(f'{dll}: not the pinned SDL3.dll')
+    shutil.copy2(dll, deps / 'bin' / 'SDL3.dll')
+    shutil.copy2(unpack('opus') / 'ucrt64' / 'bin' / 'libopus-0.dll', deps / 'bin' / 'libopus-0.dll')
+    for p in (llvm / 'bin' / 'x86_64-w64-mingw32-clang', ninja, deps / 'lib' / 'libSDL3.dll.a'):
+        if not p.is_file():
+            sys.exit(f'{p} missing after unpacking')
+    print(f'cross tools: {llvm}, {ninja}, {deps} ({mib(dir_size(llvm))}, {mib(dir_size(deps))})')
+    print(f'build: python tools/build_game.py --target windows --toolchain {llvm} --ninja {ninja} --version <ver> '
+          f'--out build/<ver>-cross')
 
 
 def collect_licenses(out):
@@ -560,12 +596,20 @@ def prove(out):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--out', type=Path, required=True, help='release folder (replaced)')
+    ap.add_argument('--out', type=Path, help='release folder (replaced); every mode but --cross-tools needs it')
     ap.add_argument('--zip', type=Path, help='also write the folder as this zip')
     ap.add_argument('--from', dest='src', type=Path,
                     help='unpacked earlier release to take python/, llvm/, runtime/deps/, bin/ and licenses/ from')
     ap.add_argument('--prove', action='store_true', help='only run the compile-and-probe check on an existing folder')
+    ap.add_argument('--cross-tools', action='store_true',
+                    help='only fetch the Linux-hosted llvm-mingw, Ninja and deps-mingw of a Windows build on a Linux host '
+                         'into toolchain/ (no release folder)')
     args = ap.parse_args()
+    if args.cross_tools:
+        cross_tools()
+        return
+    if not args.out:
+        ap.error('--out is required')
     out = args.out.resolve()
     if args.prove:
         prove(out)

@@ -66,8 +66,6 @@ PINS = {
                       '8c01bac92a9a8ce271b63d3aa28f09cde2c6762d6719ca671cdc8aee25391234'),
     'tk-linux-src': ('https://github.com/tcltk/tk/archive/refs/tags/core-9-0-4.tar.gz',
                      'ab9bd89fcff2e1248b7a9c097035f817fa0725285028c95686fdb92db65bc148'),
-    'ninja-linux': ('https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux.zip',
-                    '5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6'),
     'zstd-src': ('https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz',
                  'eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3'),
     'vulkan-headers-src': ('https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.363.tar.gz',
