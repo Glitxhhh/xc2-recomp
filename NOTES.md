@@ -41,9 +41,9 @@ build\upd\xc2.exe
 
 `tools\build_xc2.ps1` builds with the repository's own toolchain in the ignored `toolchain\`, the dev-mode layout of
 `installer/layout.py`: `toolchain\llvm-mingw-<ver>\llvm-mingw-<ver>\` (llvm-mingw, clang 23.1.4 now), `toolchain\deps-mingw`
-with `include\`, `lib\` and `bin\` (SDL3.dll, libopus-0.dll), and MSYS2 UCRT64 ninja. These came from TotK Recomp's
-release 0.2.8 (`llvm\`, `runtime\deps\`, `bin\` of an unpacked release); `-Setup <folder>` still builds from such a
-folder. The build used to borrow `..\..\totk-pc-recomp` and broke when that folder was reset.
+with `include\`, `lib\` and `bin\` (SDL3.dll, libopus-0.dll), and MSYS2 UCRT64 ninja. `tools\fetch_toolchain.py` recreates
+both folders from the release's pinned downloads (`tools/make_release.py` `PINS`, sha256-checked); `-Setup <folder>`
+still builds from an unpacked TotK or XC2 Recomp release folder. The build used to borrow `..\..\totk-pc-recomp` and broke when that folder was reset.
 
 Test runs: `XC2_ASSUME_FOCUS=1 XC2_BACKGROUND_WINDOW=1`, `--boot`, `XC2_INPUT_SCRIPT=<file>`, `--seconds N --shot x.png`,
 `XC2_SHOTS=<from>-<to>:<step>`, `XC2_DUMP=<frame>`.

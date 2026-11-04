@@ -18,6 +18,7 @@ Versions are the ones the build was verified with; newer patch releases are fine
 | Vulkan SDK | 1.4.363 | winget `KhronosGroup.VulkanSDK` | validation layers, `vulkaninfo` |
 | uv | 0.13 | standalone installer from astral.sh | the two Python environments |
 | hactool | 1.4.0 @ `1d64a83` | `.venv\Scripts\python tools\build_hactool.py`, see below | NCA and update extraction |
+| llvm-mingw + libraries | clang 23.1.4, SDL3 3.4.18, Opus 1.6.1, libvpx 1.17.0, zstd 1.5.7, Vulkan 1.4.363, VMA 3.4.0 | `.venv\Scripts\python tools\fetch_toolchain.py`, see below | `tools\build_xc2.ps1` (3.0.1) |
 
 MSYS2 packages, after `pacman -Syuu` (run it twice; the first pass updates the core and exits):
 
@@ -46,6 +47,22 @@ PATH:
   reach it intact.
 
 hactool reads `-k <prod.keys>`; MSYS2 shells set `HOME`, which hides its default key location, so pass `-k` there.
+
+### llvm-mingw and libraries
+
+`tools\build_xc2.ps1` builds 3.0.1 with llvm-mingw and the libraries the Windows release ships, not with MSYS2 clang.
+`tools/fetch_toolchain.py` downloads them (once, after the Python environments of step 1) into the ignored `toolchain\`,
+from the pinned URLs and sha256 of `tools/make_release.py` (`PINS`), cached in `toolchain\release-dl`:
+
+```powershell
+.venv\Scripts\python tools\fetch_toolchain.py
+```
+
+- `toolchain\llvm-mingw-23.1.4\llvm-mingw-23.1.4\`: llvm-mingw 20261020 (clang 23.1.4), x86_64 only;
+- `toolchain\deps-mingw\include`, `lib`: SDL3, Opus, libvpx, Vulkan headers and loader import library, zstd, VMA;
+- `toolchain\deps-mingw\bin`: `SDL3.dll` and `libopus-0.dll`, which `build_xc2.ps1` copies next to `xc2.exe`.
+
+A folder that is already there is kept; `--force` downloads and rebuilds it. Ninja still comes from MSYS2 UCRT64.
 
 ## Build
 
