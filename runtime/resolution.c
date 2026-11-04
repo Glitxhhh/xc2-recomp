@@ -2,8 +2,8 @@
 // 3840x2160, 21:9 3440x1440). The game does the rendering itself, as with the community resolution mods for 1.0.1 by
 // Fl4sh_ (github.com/Fl4sh9174/Switch-Emulator-Ultrawide-FPS-Mods), which this follows.
 //
-// The game reads its frame size from a table in its read-only data, main+0x14dfd8c in 2.2.1 (1.0.0 +0x119ec0c):
-// two sizes, shipped {1920, 1080, 1280, 720}. Its users load it through GOT entries (2.2.1 main+0x1b65858, +0x1b65860,
+// The game reads its frame size from a table in its read-only data, main+0x14dfd8c in XC3 2.2.1 (1.0.0 +0x119ec0c), the game this code came from; XC2 3.0.1 and 2.1.0 hold no such table:
+// two sizes, shipped {1920, 1080, 1280, 720}. Its users load it through GOT entries (XC3 2.2.1 main+0x1b65858, +0x1b65860,
 // +0x1b65938; read at main+0xea77a0, +0xed5a64, +0xf64b6c and others) and take the frame size and the aspect ratio
 // from it, so a wider table widens the 3D view as well. The second size is the one the game draws its picture and
 // interface in, docked too: shipped, the present gets 1280x720 frames, and with the first size alone made 2560x1080
@@ -34,7 +34,7 @@
 #define BASE_W 1920
 #define BASE_H 1080
 // Where each version keeps the table; res_init takes the one that holds the shipped sizes.
-static const uint64_t TABLES[] = {0x14dfd8c /* 2.2.1 */, 0x119ec0c /* 1.0.0 */};
+static const uint64_t TABLES[] = {0x14dfd8c /* XC3 2.2.1 */, 0x119ec0c /* XC3 1.0.0 */};
 
 static struct {
     int decided;
