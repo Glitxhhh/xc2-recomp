@@ -58,6 +58,7 @@ CHECKS = [
     Check('installer', 'tests/installer_test.py', 'tools'),
     Check('installer-gui', 'tests/installer_gui_test.py', 'tools', display=True),
     Check('hactool-log', 'tests/hactool_log_test.py', 'tools'),
+    Check('libnx-sharp', 'tests/libnx_sharp_test.py', 'tools'),
     Check('worktree', 'tests/worktree_test.py', 'tools', hosts=('nt',),
           note='Windows only: it asserts directory junctions'),
     Check('spin-waits', 'tests/spin_waits_test.py', 'lifter', modules=('capstone', 'lz4')),

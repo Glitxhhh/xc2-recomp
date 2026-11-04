@@ -114,7 +114,7 @@ LLVM_SKIP_SUFFIXES = {'.idl', '.tlb'}
 
 # tools/ files the installer steps run (and what they import), copied from the repo.
 TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract.py', 'exefs_xc2.py', 'package_select.py',
-               'romfs_index.py', 'ard_shaders.py', 'prepare_shaders.py']
+               'romfs_index.py', 'libnx_sharp.py', 'ard_shaders.py', 'prepare_shaders.py']
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
 RUNTIME_LAYOUT = ROOT / 'tools' / 'runtime-layout'   # build_game.py --gen of libxc2rt.a
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon

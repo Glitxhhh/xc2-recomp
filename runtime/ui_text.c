@@ -70,6 +70,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PICTURE_FIT_KEEP] = "Keep (bars)", [UI_MENU_PICTURE_FIT_STRETCH] = "Stretch",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
+    [UI_MENU_GAME_SHARP] = "Game's own anti-aliasing off",
+    [UI_MENU_GAME_SHARP_DESC] = "Turns off the game's anti-aliasing pass and its dynamic resolution, and draws the "
+                                "handheld mode's scene at full size instead of 75 %: much sharper in handheld mode, "
+                                "little change docked; a few more jagged edges.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws; the game's clock follows it. Above 60 is "
@@ -303,6 +307,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PICTURE_FIT_KEEP] = "Сохранять (полосы)", [UI_MENU_PICTURE_FIT_STRETCH] = "Растягивать",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
+    [UI_MENU_GAME_SHARP] = "Без сглаживания игры",
+    [UI_MENU_GAME_SHARP_DESC] = "Выключает сглаживание игры и её динамическое разрешение, а сцену портативного режима "
+                                "рисует в полном размере вместо 75 %: намного чётче в портативном режиме, в режиме "
+                                "док-станции почти без разницы; чуть больше лесенок.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду; часы игры идут по нему. Выше 60 — экспериментальный "
