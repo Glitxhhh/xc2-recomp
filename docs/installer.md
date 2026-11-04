@@ -78,8 +78,9 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   folder. `--selftest [--shots DIR]` builds every screen in both languages and closes itself.
 - `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the self-closing window and one end-to-end run
   of the CLI in `--verify` mode (needs `build/install-test` and `build/extracted/v121`; see its docstring).
-- `tests/installer_test.py`: bookkeeping with fake steps. `tests/installer_e2e.py`: a dev-mode run with the files of
-  `config.local.toml`.
+- `tests/installer_test.py`: bookkeeping with fake steps. `tests/installer_inputs_test.py`: the messages for a base
+  game with an update merged in and for the standalone Torna game chosen as add-on content. `tests/installer_e2e.py`: a
+  dev-mode run with the files of `config.local.toml`.
 
 ## Release layout
 
