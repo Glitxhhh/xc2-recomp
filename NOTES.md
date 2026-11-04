@@ -117,6 +117,6 @@ game tick).
   area's environment data mixed by a weight). Rex's floor is −8.5, and pitching up lowers the camera to about 0.36 m
   above it, so it sits 0.14 m under the top and crosses it as it bobs. The same at 30 and 60 fps; no translation
   error found on the way, so this reads as the game's own behaviour (no Switch capture to compare yet).
-- `XC2_CLOUD_TOP_FIX=1` (patch set cloudtop, off by default, `recomp/patches-upd.txt`): a camera less than 1 m under
-  the top sees a top 0.125 m below itself, so the clouds stay drawn from above. Diving deeper keeps the fog.
+- `XC2_CLOUD_TOP_FIX` (patch set cloudtop, on by default, `=0` turns it off, `recomp/fixes-upd.txt`): a camera less
+  than 1 m under the top sees a top 0.125 m below itself, so the clouds stay drawn from above. Diving deeper keeps the fog.
   Tried live at Goldmouth: no band or fog at any camera angle with it on; both come back with it off.

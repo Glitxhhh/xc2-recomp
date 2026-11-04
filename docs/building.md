@@ -172,6 +172,34 @@ well: the shadow copies are chosen for the measured cost above, not for a missin
 The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the compute decoder (`runtime/vk_astc.c`,
 `XC2_ASTC`) as on desktop AMD GPUs without it; frame times measured there include it.
 
+### Windows build from Linux
+
+A Linux host builds `xc2.exe` with the Linux-hosted tarball of the llvm-mingw release the Windows release pins
+(`tools/make_release.py`, `PINS`): the same clang, lld, `llvm-windres`, mingw-w64 headers and libc++ as a
+`--toolchain` build on Windows, with the Windows libraries from `toolchain/deps-mingw` as there. Once, with the 3.14
+environment (it reads the MSYS2 packages):
+
+```sh
+.venv-py314/bin/python tools/make_release.py --cross-tools
+```
+
+downloads and checks them into `toolchain/`: `llvm-mingw-<version>/llvm-mingw-<version>-ucrt-ubuntu-22.04-x86_64/`,
+`ninja-linux/ninja` and `deps-mingw/` (`include/`, `lib/`, `bin/` with `SDL3.dll` and `libopus-0.dll`). Then:
+
+```sh
+.venv/bin/python tools/build_game.py --version <ver> --target windows \
+    --toolchain toolchain/llvm-mingw-<version>/llvm-mingw-<version>-ucrt-ubuntu-22.04-x86_64 \
+    --ninja toolchain/ninja-linux/ninja --out build/<ver>-cross
+```
+
+writes `build/<ver>-cross/xc2.exe` with the DLLs beside it: the Windows runtime files (`*_win.c`,
+`platform/win32.c`, `xc2.rc`), flags and libraries of the Windows `--toolchain` build, so the folder is what that build
+makes and runs on a Windows machine with the game files (the host cannot run it; `--selftest` and the probes run
+there). `--target` defaults to the host's OS, so no other invocation changes. Memory is measured per process only (no
+job objects), and the generated objects are never shared with another build directory, as with `--toolchain` on
+Windows. A clean 3.0.1 build took 12 s on a 256-thread host (66 compile jobs under the 50 GiB budget; 256 jobs gained
+nothing, the largest chunk sets the time); 1.0.0 took 62 s on 32 threads.
+
 ## Checks
 
 Before a commit:
@@ -179,6 +207,11 @@ Before a commit:
 - `python tools/check_content.py --staged`: nothing game-derived is staged. CI runs the same check;
   `git config core.hooksPath .githooks` runs it before each local commit and refuses pushes to `master` or `main`.
 - `build\<ver>\xc2.exe --selftest`: layout, dispatch table and host-function registry, without game files.
+
+`python tests\run.py` runs every check that needs no game files and prints one line per check (`--list` names them,
+`--skip-native` leaves out the ones that compile C); CI runs it on Linux and Windows on every push and pull request
+(`.github/workflows/tests.yml`). `tools\check_platform.py` runs there without blocking: it still finds Win32 calls in
+`runtime/kernel.c` and `runtime/main.c`.
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`, with one known gap in `excl_mt.py` (below the table):

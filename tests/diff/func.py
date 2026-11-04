@@ -25,6 +25,7 @@ import argparse
 import os
 import platform
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -213,7 +214,10 @@ def build(work, emitted, jobs, cflags):
     if any(p.wait() for p in procs):
         raise SystemExit('compile failed')
     exe = work / ('func.exe' if os.name == 'nt' else 'func')
-    subprocess.check_call([cc, '-fuse-ld=lld', '-o', str(exe)] + [str(o) for o in objs], env=env)
+    # lld links the many-object harness fastest where MSYS2 ships it; a host without it links with the compiler's
+    # default linker, as tests/diff/common.py build_harness does.
+    ld = ['-fuse-ld=lld'] if shutil.which('ld.lld', path=env.get('PATH')) else []
+    subprocess.check_call([cc, *ld, '-o', str(exe)] + [str(o) for o in objs], env=env)
     return exe
 
 

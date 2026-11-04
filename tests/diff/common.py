@@ -183,12 +183,13 @@ class Emu:
 
 
 def compiler():
+    """The C compiler: $CC, else MSYS2's clang on Windows, else clang or gcc from PATH."""
     cc = os.environ.get('CC')
     if cc:
         return cc
     if os.name == 'nt' and (MSYS_BIN / 'clang.exe').exists():
         return str(MSYS_BIN / 'clang.exe')
-    return shutil.which('clang') or 'clang'
+    return shutil.which('clang') or shutil.which('gcc') or 'clang'
 
 
 def build_harness(work, bodies, jobs, cflags):
@@ -222,7 +223,10 @@ def build_harness(work, bodies, jobs, cflags):
     if any(p.wait() for p in procs):
         raise SystemExit('compile failed')
     exe = work / ('harness.exe' if os.name == 'nt' else 'harness')
-    subprocess.check_call([cc, '-fuse-ld=lld', '-o', str(exe)] + [str(o) for o in objs], env=env)
+    # lld is what MSYS2 ships next to clang and links the many-object harness fastest; a host without it (a Linux box
+    # or CI runner with clang but no lld package) links with the compiler's default linker instead.
+    ld = ['-fuse-ld=lld'] if shutil.which('ld.lld', path=env.get('PATH')) else []
+    subprocess.check_call([cc, *ld, '-o', str(exe)] + [str(o) for o in objs], env=env)
     return exe
 
 
