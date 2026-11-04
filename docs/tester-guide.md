@@ -8,7 +8,7 @@ from it may be shared.
 
 - Windows 10 or later, an x86-64 CPU with AVX2, about 60 GB free.
 - A GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, with a current driver.
-- *Xenoblade Chronicles 2* base game (1.0.0) and the 2.0.0 update (plus the optional add-on content), dumped from your own Switch as NSP or XCI.
+- *Xenoblade Chronicles 2* base game (1.0.0) and the 3.0.1 update (plus the optional add-on content), dumped from your own Switch as NSP or XCI.
 - `prod.keys` dumped from your own Switch. Never send it to anyone, and never paste it into a log or an issue.
 
 ## Build

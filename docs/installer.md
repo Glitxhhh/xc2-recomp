@@ -163,7 +163,7 @@ For a release:
 2. Pushing a `v<VERSION>` tag does the same for a tagged commit; a tag that differs from `VERSION` stops the run.
 3. Prove the packages locally. `--prove` reads `generated/upd`, `build/extracted/upd` and `build/upd/shaders`, which are
    game-derived, so it never runs on a runner. Its shader probes need a census: make one once, from the shaders a local
-   2.0.0 build met in play (`build/upd/shader-programs.bin`). Download both packages from the draft, then:
+   3.0.1 build met in play (`build/upd/shader-programs.bin`). Download both packages from the draft, then:
 
    ```sh
    .venv-py314\Scripts\python tools\shader_census.py --version upd --played

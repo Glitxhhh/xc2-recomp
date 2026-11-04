@@ -68,7 +68,7 @@ static void step_store(float seconds) {
 
 static void frame_limit_live(void);
 
-// XC2 2.0.0 (recomp/patches-upd.txt, set xc360): the game runs one vsync per frame and its vsync period, frame-rate
+// XC2 3.0.1 (recomp/patches-upd.txt, set xc360): the game runs one vsync per frame and its vsync period, frame-rate
 // pick and 1/30 s constant read the patch page, +0x40 the period and +0x44 the rate, so the game steps one period per
 // frame; +0x4c is 30 / frame rate, the step of the updates that count 30 fps frames. In play the period is the
 // measured frame time (the 5-frame average of display intervals, at most 1/15 s, frame_step_present), so the game

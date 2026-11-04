@@ -8,7 +8,7 @@ Two MIT projects cover different halves of the problem:
 
 | | LAS Recomp | MacNativeGames |
 |---|---|---|
-| Game | *Link's Awakening* | *Xenoblade Chronicles 2* 1.0.0 + 2.0.0 |
+| Game | *Link's Awakening* | *Xenoblade Chronicles 2* 1.0.0 + 3.0.1 |
 | CPU | ARM64 lifted to C, runs on x86-64 | Original ARM64 code runs directly on Apple silicon |
 | OS boundary | IPC services and SVCs | ~163 `nn::*` SDK functions replaced by symbol, 38 SVCs |
 | Graphics | Own NVN layer on Vulkan, own Maxwell translator | NVN front end + Metal 4 back end, Ryujinx translator |
