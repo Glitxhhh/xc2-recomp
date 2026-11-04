@@ -39,6 +39,12 @@ build\upd\xc2.exe
 
 `build\xlate\xc2_xlate.exe` is XC3's translator build copied over (same sources) with `tools\build_xlate.py --id-only`.
 
+`tools\build_xc2.ps1` builds with the repository's own toolchain in the ignored `toolchain\`, the dev-mode layout of
+`installer/layout.py`: `toolchain\llvm-mingw-<ver>\llvm-mingw-<ver>\` (llvm-mingw, clang 23.1.4 now), `toolchain\deps-mingw`
+with `include\`, `lib\` and `bin\` (SDL3.dll, libopus-0.dll), and MSYS2 UCRT64 ninja. `tools\fetch_toolchain.py` recreates
+both folders from the release's pinned downloads (`tools/make_release.py` `PINS`, sha256-checked); `-Setup <folder>`
+still builds from an unpacked TotK or XC2 Recomp release folder. The build used to borrow `..\..\totk-pc-recomp` and broke when that folder was reset.
+
 Test runs: `XC2_ASSUME_FOCUS=1 XC2_BACKGROUND_WINDOW=1`, `--boot`, `XC2_INPUT_SCRIPT=<file>`, `--seconds N --shot x.png`,
 `XC2_SHOTS=<from>-<to>:<step>`, `XC2_DUMP=<frame>`.
 
@@ -72,7 +78,13 @@ Test runs: `XC2_ASSUME_FOCUS=1 XC2_BACKGROUND_WINDOW=1`, `--boot`, `XC2_INPUT_SC
   - Still faster than real time: the title screen and 2D interface (cloud motion per second 9.3 against 5.6 at 30; the
     cheat's users report the same). The cheat also writes 60 (30 in its other branch) to +0xbd4 of the object at
     2.0.2 main+0xf82ed8, and picks its branch on 2.0.2 main+0xbd7e2c == 1.0f and main+0xbd4380 == 0 (its cutscene
-    test); neither is found in 3.0.1 yet, so cutscenes other than movies run at the limit.
+    test). The cheat's text (OldManKain, thread post #502) reads `[main+0xbd4380] != 0` as "cutscene": interval 2,
+    step 1/30, +0xbd4 = 30. The 2.1.0 cheat uses the same two addresses, and 2.1.0 lays bss out as 2.0.2; 3.0.1 moved
+    it by +0x1000 (the same 17 sites write +0x10 of main+0xbd5370 in both). `frame_rate.c xc2_cutscene` reads
+    main+0xbd5380 (2026-11-03): 1 on the title screen and through the opening cutscene, 0 after PLUS skips to play,
+    1 again at the next event scene; play holds 59-60 fps, cutscenes 30. Not used: the cheat's +0xbd4 / 2.1.0
+    [main+0x15e8750]+0x264 write (3.0.1 [main+0x15e9750]+0x264 reads 30 in play and in cutscenes; its use is unknown)
+    and its `main+0xbd7e2c != 1.0f` test (3.0.1 +0xbd8e2c stays 0 through the opening).
   - The vsync thread (main+0x89bb08, a 60 Hz WaitSystemEvent loop) counts vsyncs at +0x278 of its object. The frame
     wait does not use it.
   - Not frame pacing: the periodic timer at main+0xec7540 is nn::hid's vibration sampler.
@@ -81,5 +93,5 @@ Test runs: `XC2_ASSUME_FOCUS=1 XC2_BACKGROUND_WINDOW=1`, `--boot`, `XC2_INPUT_SC
   site, not at the NVN interval.
 - `docs/` and `tests/` still describe XC3 2.2.1 / XCX behaviour under the renamed names; the installer and release text say
   XC2 3.0.1.
-- The toolchain's deps directory has no `bin/`, so `build_game.py --deps` copies no DLLs; a new build directory takes them
-  from `build\upd`.
+- A release folder's deps directory (`-Setup`) has no `bin/`, so `build_game.py --deps` copies no DLLs there; a new build
+  directory takes them from `build\upd`. `toolchain\deps-mingw\bin` has them.
