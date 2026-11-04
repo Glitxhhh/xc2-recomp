@@ -89,6 +89,10 @@ game tick).
   - The vsync thread (main+0x89bb08, a 60 Hz WaitSystemEvent loop) counts vsyncs at +0x278 of its object. The frame
     wait does not use it.
   - Not frame pacing: the periodic timer at main+0xec7540 is nn::hid's vibration sampler.
+- Game fixes, 3.0.1 (`recomp/fixes-upd.txt`, included by `patches-upd.txt`; sites from Aegis, checked against our
+  modules): set `wind` (`XC2_WIND_GUARD`) sends main+0x1ab7c0, which can remove a wind object twice and stop the game,
+  to `xc2_fixes.c wind_remove`; set `hipcwake` (`XC2_HIPC_BROADCAST`) makes the HIPC session pool broadcast instead of
+  signal one waiter (a lost wakeup Aegis saw as a boot hang). Neither crash nor hang has been seen in this port yet.
 - XC2 builds its window with present interval 1 and never changes it (`XC2_TRACE=gfx`: `nvnWindowSetPresentInterval` is
   not called through the new-game script). Its 30 fps cap is the game's own vsync waits, so 60 fps needs a patch at that
   site, not at the NVN interval.

@@ -95,3 +95,5 @@ site xc360 main 6a3710 a9417bfd @page:x8 bd405100 a9417bfd
 #   fcmgt s2, s2, s1; fcmgt s1, s1, #0.0; and v1.8b, v1.8b, v2.8b; bit v10.8b, v3.8b, v1.8b
 set cloudtop XC2_CLOUD_TOP_FIX 1
 site cloudtop main 710250 bd4196ca bd4196ca bd4156c0 1e203941 1e2e1002 1e281003 1e233803 7ea1e442 5ea0c821 0e221c21 2ea11c6a
+
+include fixes-upd.txt   # the game fixes, kept by hand
