@@ -1,5 +1,11 @@
 # XC2 Recomp
 
+> [!IMPORTANT]
+> **Development continues at [AksharDP/xc2-recomp](https://github.com/AksharDP/xc2-recomp).** This repository is no longer
+> maintained. Its releases stay available, but new builds, fixes and support are there: download from its
+> [releases](https://github.com/AksharDP/xc2-recomp/releases) and report problems in its
+> [issues](https://github.com/AksharDP/xc2-recomp/issues).
+
 **XC2 Recomp** is a static recompilation of *Xenoblade Chronicles 2* (Nintendo Switch, 2017) into a native Windows x86-64 application ([docs/architecture.md](docs/architecture.md)). It is a fork of [XCX Recomp](https://github.com/jmars125/xcx-recomp), itself a fork of [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh.
 
 > [!IMPORTANT]
